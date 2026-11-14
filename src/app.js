@@ -21,7 +21,7 @@ app.use('/uploads', express.static(path.resolve(process.cwd(), appConfig.uploadD
 app.get('/', (req, res) => {
   res.status(200).json({
     status: 'healthy',
-    message: 'Express API Server is running',
+    message: 'Express API Server is running.',
     timestamp: new Date().toISOString(),
   });
 });
