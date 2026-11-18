@@ -1,4 +1,5 @@
 import { Document } from '../models/document.model.js';
+import { DocumentForward } from '../models/document.forward.model.js';
 import { DocumentPermission } from '../models/document.permission.model.js';
 
 export const checkDocumentAccess = (requiredPermission = 'canView') => {
@@ -61,24 +62,38 @@ export const checkDocumentAccess = (requiredPermission = 'canView') => {
             canDownload: true,
             isDeptAdmin: true,
           };
-        } else if (document.targetAudience === 'all_employees' || document.targetAudience === 'department_only') {
-          hasAccess = true;
-          userPermission = {
-            canView: true,
-            canRemark: true,
-            canSuggestChange: true,
-            canDownload: true,
-          };
+        } else {
+          // Employee access level evaluation
+          const docAccess = document.accessControl || document.targetAudience;
+          if (docAccess === 'general' || docAccess === 'all_employees' || docAccess === 'department_only') {
+            hasAccess = true;
+            userPermission = {
+              canView: true,
+              canRemark: true,
+              canSuggestChange: true,
+              canDownload: true,
+            };
+          } else if (docAccess === 'restricted' && req.user.isAuthorizedOfficer) {
+            hasAccess = true;
+            userPermission = {
+              canView: true,
+              canRemark: true,
+              canSuggestChange: true,
+              canDownload: true,
+            };
+          }
         }
       }
 
-      // 2. Check Forwarded Departments Access
+      // 2. Check Forwarded Departments Access via DocumentForward collection (O(1) indexed lookup)
       if (!hasAccess && userDeptStr) {
-        const forwardedDept = document.forwardedDepartments.find(
-          (f) => f.departmentId.toString() === userDeptStr && !f.isDeletedForDept
-        );
+        const forwardedRecord = await DocumentForward.findOne({
+          documentId: document._id,
+          targetDepartmentId: userDeptStr,
+          isDeletedForDept: false,
+        });
 
-        if (forwardedDept) {
+        if (forwardedRecord) {
           if (req.user.role === 'department_admin') {
             hasAccess = true;
             userPermission = {
@@ -88,14 +103,25 @@ export const checkDocumentAccess = (requiredPermission = 'canView') => {
               canDownload: true,
               isForwardedDeptAdmin: true,
             };
-          } else if (forwardedDept.targetAudience === 'all_employees') {
-            hasAccess = true;
-            userPermission = {
-              canView: true,
-              canRemark: true,
-              canSuggestChange: true,
-              canDownload: true,
-            };
+          } else {
+            const fwdAccess = forwardedRecord.accessControl || forwardedRecord.targetAudience;
+            if (fwdAccess === 'general' || fwdAccess === 'all_employees') {
+              hasAccess = true;
+              userPermission = {
+                canView: true,
+                canRemark: true,
+                canSuggestChange: true,
+                canDownload: true,
+              };
+            } else if (fwdAccess === 'restricted' && req.user.isAuthorizedOfficer) {
+              hasAccess = true;
+              userPermission = {
+                canView: true,
+                canRemark: true,
+                canSuggestChange: true,
+                canDownload: true,
+              };
+            }
           }
         }
       }
@@ -136,3 +162,5 @@ export const checkDocumentAccess = (requiredPermission = 'canView') => {
     }
   };
 };
+
+export default checkDocumentAccess;

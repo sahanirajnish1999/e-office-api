@@ -38,5 +38,8 @@ const departmentSchema = new mongoose.Schema(
   }
 );
 
+// Index for fast sorting and pagination
+departmentSchema.index({ createdAt: -1 });
+
 export const Department = mongoose.model('Department', departmentSchema);
 export default Department;

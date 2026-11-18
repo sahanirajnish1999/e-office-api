@@ -2,25 +2,41 @@ import mongoose from 'mongoose';
 
 const documentSchema = new mongoose.Schema(
   {
-    // 1. Basic Metadata
+    // 1. Core Identification & Metadata
+    fileNumber: {
+      type: String,
+      required: [true, 'File number is required'],
+      unique: true,
+      trim: true,
+      uppercase: true,
+      index: true,
+    },
     title: {
       type: String,
       required: [true, 'Document title is required'],
       trim: true,
-    },
-    fileDate: {
-      type: Date,
-      default: Date.now,
     },
     subject: {
       type: String,
       required: [true, 'Subject/purpose of the file is required'],
       trim: true,
     },
-    shelf: {
+    priority: {
       type: String,
-      default: 'General Rack',
-      trim: true,
+      enum: ['routine', 'urgent', 'immediate'],
+      default: 'routine',
+      index: true,
+    },
+    accessControl: {
+      type: String,
+      enum: ['general', 'restricted', 'confidential', 'secret'],
+      default: 'general',
+      index: true,
+    },
+    registrationDate: {
+      type: Date,
+      required: [true, 'Registration date must be manually chosen'],
+      index: true,
     },
     highlights: [
       {
@@ -37,36 +53,52 @@ const documentSchema = new mongoose.Schema(
     mimeType: { type: String, required: true },
     fileSize: { type: Number, required: true },
 
-    // 3. Primary Department & Access Control
+    // 3. Header, Letterhead & Logo Customization
+    logoFileName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    logoUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    logoOriginalName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    topHeadline: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    topSubHeadline: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    topOtherDetails: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    footerDetails: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    // 4. Primary Department Ownership
     departmentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Department',
       required: true,
-    },
-    targetAudience: {
-      type: String,
-      enum: ['all_employees', 'department_only', 'specific_employees'],
-      default: 'department_only',
+      index: true,
     },
 
-    // 4. Department Forwarding Array
-    forwardedDepartments: [
-      {
-        departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true },
-        forwardedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        forwardedAt: { type: Date, default: Date.now },
-        targetAudience: {
-          type: String,
-          enum: ['all_employees', 'specific_employees'],
-          default: 'all_employees',
-        },
-        isDeletedForDept: { type: Boolean, default: false },
-        deletedAt: Date,
-        deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-      },
-    ],
-
-    // 5. Remarks from Accessors
+    // 4. Remarks from Accessors
     remarks: [
       {
         userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -76,7 +108,7 @@ const documentSchema = new mongoose.Schema(
       },
     ],
 
-    // 6. Virtual Sticky Notes (Colorful)
+    // 5. Virtual Sticky Notes (Colorful)
     stickies: [
       {
         color: {
@@ -91,7 +123,7 @@ const documentSchema = new mongoose.Schema(
       },
     ],
 
-    // 7. Official Document Notings
+    // 6. Official Document Notings
     notings: [
       {
         text: { type: String, required: true, trim: true },
@@ -105,7 +137,7 @@ const documentSchema = new mongoose.Schema(
       },
     ],
 
-    // 8. Ownership, Deletion & Visibility Controls
+    // 7. Ownership, Deletion & Visibility Controls
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -133,17 +165,36 @@ const documentSchema = new mongoose.Schema(
   {
     timestamps: true,
     toJSON: {
+      virtuals: true,
       transform: (doc, ret) => {
         delete ret.__v;
         return ret;
       },
     },
+    toObject: { virtuals: true },
   }
 );
 
-// Indexes for fast searching
-documentSchema.index({ title: 'text', subject: 'text' });
-documentSchema.index({ departmentId: 1, fileDate: -1 });
+// Virtual aliases for compatibility and convenience
+documentSchema.virtual('fileTitle').get(function () {
+  return this.title;
+});
+documentSchema.virtual('fileSubject').get(function () {
+  return this.subject;
+});
+documentSchema.virtual('filePriority').get(function () {
+  return this.priority;
+});
+documentSchema.virtual('fileDate').get(function () {
+  return this.registrationDate;
+});
+documentSchema.virtual('targetAudience').get(function () {
+  return this.accessControl;
+});
+
+// Indexes for fast searching and multi-attribute filtering
+documentSchema.index({ fileNumber: 'text', title: 'text', subject: 'text' });
+documentSchema.index({ departmentId: 1, priority: 1, accessControl: 1, registrationDate: -1 });
 
 export const Document = mongoose.model('Document', documentSchema);
 export default Document;

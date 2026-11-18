@@ -1,10 +1,21 @@
 import { User } from '../models/user.model.js';
 import { Department } from '../models/department.model.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
+import { sendAccountCreatedEmail } from '../utils/mail.util.js';
 
 export const createEmployee = async (req, res, next) => {
   try {
-    const { name, email, password, departmentId } = req.body;
+    const {
+      name,
+      email,
+      password,
+      departmentId,
+      employeeId,
+      phone,
+      designation,
+      isAuthorizedOfficer,
+      permissions,
+    } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -51,13 +62,38 @@ export const createEmployee = async (req, res, next) => {
       });
     }
 
-    const employee = await User.create({
+    const employeeData = {
       name,
       email,
       password,
       role: 'employee',
       departmentId: targetDeptId,
-    });
+      employeeId: employeeId || '',
+      phone: phone || '',
+      designation: designation || 'Staff Employee',
+      isAuthorizedOfficer: Boolean(isAuthorizedOfficer),
+    };
+
+    if (permissions && typeof permissions === 'object') {
+      employeeData.permissions = permissions;
+    }
+
+    const employee = await User.create(employeeData);
+
+    // Send account creation email with login credentials
+    try {
+      await sendAccountCreatedEmail({
+        email: employee.email,
+        name: employee.name,
+        userId: employee._id,
+        employeeId: employee.employeeId,
+        password,
+        role: employee.role,
+        departmentName: dept.name,
+      });
+    } catch (mailError) {
+      console.error('Failed to send welcome email to employee:', mailError.message);
+    }
 
     res.status(201).json({
       success: true,

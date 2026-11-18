@@ -38,6 +38,56 @@ const userSchema = new mongoose.Schema(
       ref: 'Department',
       default: null, // super_admin has null departmentId
     },
+    employeeId: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    phone: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    designation: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    isAuthorizedOfficer: {
+      type: Boolean,
+      default: false,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+    lastActiveAt: {
+      type: Date,
+      default: Date.now,
+    },
+    permissions: {
+      canViewDashboard:       { type: Boolean, default: true },
+      canViewMyFiles:         { type: Boolean, default: true },
+      canCreateFile:          { type: Boolean, default: false },
+      canUploadDocuments:     { type: Boolean, default: false },
+      canCreateReplica:       { type: Boolean, default: true },
+      canHighlightDocuments:  { type: Boolean, default: true },
+      canAddRemarks:          { type: Boolean, default: true },
+      canViewReceivedFiles:   { type: Boolean, default: true },
+      canSearchFiles:         { type: Boolean, default: true },
+      canAccessWorkspace:     { type: Boolean, default: true },
+      canUseStickyNotes:      { type: Boolean, default: true },
+      canAddOfficialNoting:   { type: Boolean, default: false },
+      canApproveNoting:       { type: Boolean, default: false },
+      canUseSpellingSynonyms: { type: Boolean, default: true },
+      canManageReminders:     { type: Boolean, default: true },
+      canViewNotifications:   { type: Boolean, default: true },
+      canWithdrawFile:        { type: Boolean, default: false },
+      canDeletePartial:       { type: Boolean, default: false },
+      canDeletePermanent:     { type: Boolean, default: false },
+      canViewApprovals:       { type: Boolean, default: false },
+      canViewProfile:         { type: Boolean, default: true },
+    },
     passwordResetToken: {
       type: String,
       select: false,
@@ -50,16 +100,31 @@ const userSchema = new mongoose.Schema(
   {
     timestamps: true,
     toJSON: {
+      virtuals: true,
       transform: (doc, ret) => {
         delete ret.password;
         delete ret.passwordResetToken;
         delete ret.passwordResetExpires;
         delete ret.__v;
+        // Expose joinedDate from createdAt
+        if (ret.createdAt) {
+          ret.joinedDate = ret.createdAt;
+          delete ret.createdAt;
+        }
         return ret;
       },
     },
+    toObject: { virtuals: true },
   }
 );
+
+// Virtual aliases
+userSchema.virtual('joinedDate').get(function () {
+  return this.createdAt;
+});
+userSchema.virtual('lastActiveTime').get(function () {
+  return this.lastActiveAt;
+});
 
 // Hash password before saving to database
 userSchema.pre('save', async function (next) {
@@ -83,6 +148,9 @@ userSchema.methods.createPasswordResetToken = function () {
   this.passwordResetExpires = Date.now() + 15 * 60 * 1000; // 15 mins
   return resetToken;
 };
+
+// Indexes for fast lookups and aggregations
+userSchema.index({ departmentId: 1, role: 1 });
 
 export const User = mongoose.model('User', userSchema);
 export default User;

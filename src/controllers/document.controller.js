@@ -1,10 +1,14 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import mongoose from 'mongoose';
 import { Document } from '../models/document.model.js';
 import { Department } from '../models/department.model.js';
 import { DocumentLog } from '../models/document.log.model.js';
 import { DocumentPermission } from '../models/document.permission.model.js';
+import { DocumentForward } from '../models/document.forward.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
+import { moveToDocumentFolder, removeDocumentFolder } from '../utils/file.util.js';
 
 /**
  * 1. Upload & Create Document
@@ -12,28 +16,103 @@ import { getPaginationParams, formatPaginatedResponse } from '../utils/paginatio
  */
 export const createDocument = async (req, res, next) => {
   try {
-    if (!req.file) {
+    const mainFile = req.files?.file?.[0] || req.file;
+    const logoFile = req.files?.logo?.[0];
+
+    if (!mainFile) {
       return res.status(400).json({
         success: false,
         message: 'No file uploaded. Please upload a file with the key "file"',
       });
     }
 
+    const cleanupTempFiles = () => {
+      try {
+        if (mainFile?.path && fs.existsSync(mainFile.path)) fs.unlinkSync(mainFile.path);
+        if (logoFile?.path && fs.existsSync(logoFile.path)) fs.unlinkSync(logoFile.path);
+      } catch {}
+    };
+
     const {
+      fileNumber,
       title,
-      fileDate,
+      fileTitle,
       subject,
-      shelf,
+      fileSubject,
+      priority,
+      filePriority,
+      accessControl,
+      targetAudience,
+      registrationDate,
+      fileDate,
       highlights,
       departmentId,
-      targetAudience,
       allowedUsers,
+      topHeadline,
+      topSubHeadline,
+      topOtherDetails,
+      footerDetails,
+      logoFileName,
     } = req.body;
 
-    if (!title || !subject) {
+    const finalTitle = (title || fileTitle || '').trim();
+    const finalSubject = (subject || fileSubject || '').trim();
+    const finalFileNumber = (fileNumber || '').trim().toUpperCase();
+    const finalRegistrationDate = registrationDate || fileDate;
+
+    if (!finalFileNumber) {
+      cleanupTempFiles();
       return res.status(400).json({
         success: false,
-        message: 'Title and subject/purpose are required fields',
+        message: 'fileNumber is required (e.g., MOR/CIVIL/2026/F-114)',
+      });
+    }
+
+    if (!finalTitle || !finalSubject) {
+      cleanupTempFiles();
+      return res.status(400).json({
+        success: false,
+        message: 'File title and subject are required fields',
+      });
+    }
+
+    if (!finalRegistrationDate) {
+      cleanupTempFiles();
+      return res.status(400).json({
+        success: false,
+        message: 'registrationDate must be chosen manually (e.g., 2026-11-17)',
+      });
+    }
+
+    // Validate priority
+    const validPriorities = ['routine', 'urgent', 'immediate'];
+    const chosenPriority = (priority || filePriority || 'routine').toLowerCase();
+    if (!validPriorities.includes(chosenPriority)) {
+      cleanupTempFiles();
+      return res.status(400).json({
+        success: false,
+        message: `Invalid priority '${chosenPriority}'. Allowed options: ${validPriorities.join(', ')}`,
+      });
+    }
+
+    // Validate accessControl
+    const validAccessControls = ['general', 'restricted', 'confidential', 'secret'];
+    const chosenAccess = (accessControl || targetAudience || 'general').toLowerCase();
+    if (!validAccessControls.includes(chosenAccess)) {
+      cleanupTempFiles();
+      return res.status(400).json({
+        success: false,
+        message: `Invalid accessControl '${chosenAccess}'. Allowed options: ${validAccessControls.join(', ')}`,
+      });
+    }
+
+    // Check if fileNumber already exists
+    const existingFile = await Document.findOne({ fileNumber: finalFileNumber });
+    if (existingFile) {
+      cleanupTempFiles();
+      return res.status(409).json({
+        success: false,
+        message: `A document with file number '${finalFileNumber}' already exists`,
       });
     }
 
@@ -44,6 +123,7 @@ export const createDocument = async (req, res, next) => {
     }
 
     if (!targetDeptId) {
+      cleanupTempFiles();
       return res.status(400).json({
         success: false,
         message: 'A valid departmentId must be specified for this file',
@@ -52,6 +132,7 @@ export const createDocument = async (req, res, next) => {
 
     const dept = await Department.findById(targetDeptId);
     if (!dept) {
+      cleanupTempFiles();
       return res.status(404).json({
         success: false,
         message: 'Target department does not exist',
@@ -86,58 +167,114 @@ export const createDocument = async (req, res, next) => {
       }
     }
 
-    const fileUrl = `/uploads/${req.file.filename}`;
+    // Pre-generate document ObjectId to organize files in dedicated folders
+    const docId = new mongoose.Types.ObjectId();
+
+    // Organize main file in uploads/uploaded-files/<docId>/files/
+    const movedMain = moveToDocumentFolder(mainFile.path, docId, 'files');
+    const finalFilePath = movedMain ? movedMain.destPath : mainFile.path;
+    const finalStoredFilename = movedMain ? movedMain.filename : mainFile.filename;
+    const fileUrl = movedMain ? movedMain.fileUrl : `/uploads/${mainFile.filename}`;
+
+    // Organize logo in uploads/uploaded-files/<docId>/logo/ if uploaded
+    let logoUrl = '';
+    let finalLogoFileName = (logoFileName || '').trim();
+    let logoOriginalName = '';
+
+    if (logoFile) {
+      const movedLogo = moveToDocumentFolder(logoFile.path, docId, 'logo');
+      logoUrl = movedLogo ? movedLogo.fileUrl : `/uploads/${logoFile.filename}`;
+      finalLogoFileName = movedLogo ? movedLogo.filename : logoFile.filename;
+      logoOriginalName = logoFile.originalname;
+    }
 
     // Create Main Document (Stays ultra-lightweight: ~1-2 KB)
     const document = await Document.create({
-      title,
-      fileDate: fileDate ? new Date(fileDate) : new Date(),
-      subject,
-      shelf: shelf || 'General Rack',
+      _id: docId,
+      fileNumber: finalFileNumber,
+      title: finalTitle,
+      subject: finalSubject,
+      priority: chosenPriority,
+      accessControl: chosenAccess,
+      registrationDate: new Date(finalRegistrationDate),
       highlights: parsedHighlights,
-      originalName: req.file.originalname,
-      storedFilename: req.file.filename,
-      filePath: req.file.path,
+      originalName: mainFile.originalname,
+      storedFilename: finalStoredFilename,
+      filePath: finalFilePath,
       fileUrl,
-      mimeType: req.file.mimetype,
-      fileSize: req.file.size,
+      mimeType: mainFile.mimetype,
+      fileSize: mainFile.size,
+      logoFileName: finalLogoFileName,
+      logoUrl,
+      logoOriginalName,
+      topHeadline: (topHeadline || '').trim(),
+      topSubHeadline: (topSubHeadline || '').trim(),
+      topOtherDetails: (topOtherDetails || '').trim(),
+      footerDetails: (footerDetails || '').trim(),
       departmentId: targetDeptId,
-      targetAudience: targetAudience || 'department_only',
       createdBy: req.user.id,
     });
 
-    // Pattern B: Bulk insert permissions into DocumentPermission collection
-    if (parsedAllowedUsers.length > 0) {
-      const permissionDocs = parsedAllowedUsers.map((u) => ({
+    // Automatically grant creator full owner file access permissions
+    const permissionDocs = [
+      {
         documentId: document._id,
-        userId: u.userId,
+        userId: req.user.id,
         departmentId: targetDeptId,
-        permissions: u.permissions || {
+        permissions: {
           canView: true,
           canRemark: true,
           canSuggestChange: true,
           canDownload: true,
+          canHighlightDocuments: true,
+          canUseStickyNotes: true,
+          canAddOfficialNoting: true,
+          canApproveNoting: true,
+          canWithdrawFile: true,
+          canDeletePartial: true,
         },
         grantedBy: req.user.id,
-      }));
+      },
+    ];
 
-      await DocumentPermission.insertMany(permissionDocs, { ordered: false }).catch((err) => {
-        console.warn('Some duplicate permission grants skipped:', err.message);
-      });
+    // Bulk insert file access permissions for any additional specified users
+    if (parsedAllowedUsers.length > 0) {
+      for (const u of parsedAllowedUsers) {
+        if (u.userId && u.userId.toString() !== req.user.id.toString()) {
+          permissionDocs.push({
+            documentId: document._id,
+            userId: u.userId,
+            departmentId: targetDeptId,
+            permissions: {
+              canView: u.permissions?.canView !== undefined ? Boolean(u.permissions.canView) : true,
+              canRemark: u.permissions?.canRemark !== undefined ? Boolean(u.permissions.canRemark) : true,
+              canSuggestChange: u.permissions?.canSuggestChange !== undefined ? Boolean(u.permissions.canSuggestChange) : true,
+              canDownload: u.permissions?.canDownload !== undefined ? Boolean(u.permissions.canDownload) : true,
+              canHighlightDocuments: u.permissions?.canHighlightDocuments !== undefined ? Boolean(u.permissions.canHighlightDocuments) : true,
+              canUseStickyNotes: u.permissions?.canUseStickyNotes !== undefined ? Boolean(u.permissions.canUseStickyNotes) : true,
+              canAddOfficialNoting: Boolean(u.permissions?.canAddOfficialNoting),
+              canApproveNoting: Boolean(u.permissions?.canApproveNoting),
+              canWithdrawFile: Boolean(u.permissions?.canWithdrawFile),
+              canDeletePartial: Boolean(u.permissions?.canDeletePartial),
+            },
+            grantedBy: req.user.id,
+          });
+        }
+      }
     }
+
+    await DocumentPermission.insertMany(permissionDocs, { ordered: false }).catch((err) => {
+      console.warn('Some duplicate permission grants skipped:', err.message);
+    });
 
     // Record audit log
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
+      fileNumber: document.fileNumber || fileNumber || '',
       user: req.user,
-      action: 'CREATE',
-      description: `Document '${document.title}' uploaded and created by ${req.user.name || req.user.email}`,
-      details: {
-        department: dept.name,
-        shelf: document.shelf,
-        targetAudience: document.targetAudience,
-        grantedUsersCount: parsedAllowedUsers.length,
-      },
+      action: 'File Created',
+      details: `Created electronic file ${document.fileNumber || document.title}: ${document.subject || ''}`,
+      req,
     });
 
     res.status(201).json({
@@ -160,7 +297,9 @@ export const searchAndListDocuments = async (req, res, next) => {
       departmentId,
       search,
       subject,
-      shelf,
+      priority,
+      accessControl,
+      fileNumber,
       accessorId,
       dateFrom,
       dateTo,
@@ -184,68 +323,83 @@ export const searchAndListDocuments = async (req, res, next) => {
         query.departmentId = departmentId;
       }
     } else if (req.user.role === 'department_admin') {
-      query.$and = [
-        { 'hiddenForUsers.userId': { $ne: userId } },
-        {
-          $or: [
-            { departmentId: userDeptId, isDeletedForOriginDept: false },
-            {
-              forwardedDepartments: {
-                $elemMatch: {
-                  departmentId: userDeptId,
-                  isDeletedForDept: false,
-                },
-              },
-            },
-          ],
-        },
-      ];
-    } else {
-      // Employee: Find document IDs where employee has individual permission via DocumentPermission
-      const userPermittedDocIds = await DocumentPermission.distinct('documentId', {
-        userId,
+      const forwardedDocIds = await DocumentForward.distinct('documentId', {
+        targetDepartmentId: userDeptId,
+        isDeletedForDept: false,
       });
 
       query.$and = [
         { 'hiddenForUsers.userId': { $ne: userId } },
         {
           $or: [
-            // Origin department group files
+            { departmentId: userDeptId, isDeletedForOriginDept: false },
+            { _id: { $in: forwardedDocIds } },
+          ],
+        },
+      ];
+    } else {
+      // Employee scoping
+      const userPermittedDocIds = await DocumentPermission.distinct('documentId', {
+        userId,
+      });
+
+      // Check forwarded files accessible to employee
+      const fwdFilter = {
+        targetDepartmentId: userDeptId,
+        isDeletedForDept: false,
+      };
+      if (!req.user.isAuthorizedOfficer) {
+        fwdFilter.accessControl = { $in: ['general', 'all_employees'] };
+      } else {
+        fwdFilter.accessControl = { $in: ['general', 'restricted', 'all_employees'] };
+      }
+      const forwardedDocIds = await DocumentForward.distinct('documentId', fwdFilter);
+
+      const originDeptAccessList = ['general', 'all_employees', 'department_only'];
+      if (req.user.isAuthorizedOfficer) {
+        originDeptAccessList.push('restricted');
+      }
+
+      query.$and = [
+        { 'hiddenForUsers.userId': { $ne: userId } },
+        {
+          $or: [
             {
               departmentId: userDeptId,
               isDeletedForOriginDept: false,
-              targetAudience: { $in: ['all_employees', 'department_only'] },
+              accessControl: { $in: originDeptAccessList },
             },
-            // Forwarded department group files
-            {
-              forwardedDepartments: {
-                $elemMatch: {
-                  departmentId: userDeptId,
-                  isDeletedForDept: false,
-                  targetAudience: 'all_employees',
-                },
-              },
-            },
-            // Directly granted individual permissions
+            { _id: { $in: forwardedDocIds } },
             { _id: { $in: userPermittedDocIds } },
           ],
         },
       ];
     }
 
-    // 3. Search text / subject
+    // 3. Search text / title / subject / fileNumber
     if (search || subject) {
       const searchTerm = search || subject;
       query.$or = query.$or || [];
-      query.title = { $regex: searchTerm, $options: 'i' };
+      query.$or.push(
+        { title: { $regex: searchTerm, $options: 'i' } },
+        { subject: { $regex: searchTerm, $options: 'i' } },
+        { fileNumber: { $regex: searchTerm, $options: 'i' } }
+      );
     }
 
-    // 4. Shelf filter
-    if (shelf) {
-      query.shelf = { $regex: shelf, $options: 'i' };
+    if (fileNumber) {
+      query.fileNumber = { $regex: fileNumber.trim(), $options: 'i' };
     }
 
-    // 5. Accessor filter (Find files permitted to a specific user)
+    if (priority) {
+      query.priority = priority.toLowerCase();
+    }
+
+    if (accessControl) {
+      query.accessControl = accessControl.toLowerCase();
+    }
+
+    // 4. Accessor filter (Find files permitted to a specific user)
     if (accessorId) {
       const accessorPermittedDocIds = await DocumentPermission.distinct('documentId', {
         userId: accessorId,
@@ -253,15 +407,15 @@ export const searchAndListDocuments = async (req, res, next) => {
       query._id = { $in: accessorPermittedDocIds };
     }
 
-    // 6. Date range filter
+    // 6. Date range filter (Registration Date)
     if (dateFrom || dateTo) {
-      query.fileDate = {};
-      if (dateFrom) query.fileDate.$gte = new Date(dateFrom);
-      if (dateTo) query.fileDate.$lte = new Date(dateTo);
+      query.registrationDate = {};
+      if (dateFrom) query.registrationDate.$gte = new Date(dateFrom);
+      if (dateTo) query.registrationDate.$lte = new Date(dateTo);
     }
 
     // 7. Sorting
-    let sortOptions = { fileDate: -1 };
+    let sortOptions = { registrationDate: -1, createdAt: -1 };
     if (sortAlphabetical === 'true' || sortAlphabetical === 'asc') {
       sortOptions = { title: 1 };
     } else if (sortAlphabetical === 'desc') {
@@ -276,7 +430,6 @@ export const searchAndListDocuments = async (req, res, next) => {
       Document.find(query)
         .populate('departmentId', 'name code')
         .populate('createdBy', 'name email')
-        .populate('forwardedDepartments.departmentId', 'name code')
         .sort(sortOptions)
         .skip(skip)
         .limit(pageSize),
@@ -302,14 +455,30 @@ export const getDocumentById = async (req, res, next) => {
   try {
     const document = await Document.findById(req.params.id)
       .populate('departmentId', 'name code description')
-      .populate('createdBy', 'name email')
-      .populate('forwardedDepartments.departmentId', 'name code')
-      .populate('forwardedDepartments.forwardedBy', 'name email');
+      .populate('createdBy', 'name email');
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document not found',
+      });
+    }
+
+    const forwards = await DocumentForward.find({
+      documentId: document._id,
+      isDeletedForDept: false,
+    })
+      .populate('targetDepartmentId', 'name code')
+      .populate('fromDepartmentId', 'name code')
+      .populate('forwardedBy', 'name email');
 
     res.status(200).json({
       success: true,
       userPermission: req.userPermission,
-      data: document,
+      data: {
+        ...document.toObject(),
+        forwardedDepartments: forwards,
+      },
     });
   } catch (error) {
     next(error);
@@ -516,7 +685,14 @@ export const revokeDocumentPermission = async (req, res, next) => {
  */
 export const forwardDocument = async (req, res, next) => {
   try {
-    const { targetDepartmentId, targetAudience, allowedUsers } = req.body;
+    const {
+      targetDepartmentId,
+      priority,
+      accessControl,
+      targetAudience,
+      remarks,
+      allowedUsers,
+    } = req.body;
     const document = req.document;
 
     if (!targetDepartmentId) {
@@ -534,26 +710,31 @@ export const forwardDocument = async (req, res, next) => {
       });
     }
 
-    const alreadyForwarded = document.forwardedDepartments.some(
-      (f) => f.departmentId.toString() === targetDepartmentId.toString() && !f.isDeletedForDept
-    );
+    const existingForward = await DocumentForward.findOne({
+      documentId: document._id,
+      targetDepartmentId,
+      isDeletedForDept: false,
+    });
 
-    if (alreadyForwarded) {
+    if (existingForward) {
       return res.status(409).json({
         success: false,
         message: `Document has already been forwarded to ${targetDept.name}`,
       });
     }
 
-    document.forwardedDepartments.push({
-      departmentId: targetDepartmentId,
-      forwardedBy: req.user.id,
-      forwardedAt: new Date(),
-      targetAudience: targetAudience || 'all_employees',
-      isDeletedForDept: false,
-    });
+    const chosenPriority = (priority || document.priority || 'routine').toLowerCase();
+    const chosenAccess = (accessControl || targetAudience || 'general').toLowerCase();
 
-    await document.save();
+    const forwardRecord = await DocumentForward.create({
+      documentId: document._id,
+      fromDepartmentId: document.departmentId,
+      targetDepartmentId,
+      forwardedBy: req.user.id,
+      priority: chosenPriority,
+      accessControl: chosenAccess,
+      remarks: remarks || '',
+    });
 
     // If allowedUsers passed for forwarded department, store into DocumentPermission
     if (allowedUsers && Array.isArray(allowedUsers) && allowedUsers.length > 0) {
@@ -573,17 +754,18 @@ export const forwardDocument = async (req, res, next) => {
     }
 
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
       user: req.user,
-      action: 'FORWARD_TO_DEPARTMENT',
-      description: `Document forwarded to '${targetDept.name}' by ${req.user.name || req.user.email}`,
-      details: { targetDepartment: targetDept.name, targetDepartmentId },
+      action: 'File Forwarded',
+      details: `Document forwarded to '${targetDept.name}' by ${req.user.name || req.user.email}`,
+      req,
     });
 
     res.status(200).json({
       success: true,
       message: `Document successfully forwarded to department: ${targetDept.name}`,
-      data: document.forwardedDepartments,
+      data: forwardRecord,
     });
   } catch (error) {
     next(error);
@@ -597,7 +779,7 @@ export const forwardDocument = async (req, res, next) => {
 export const updateForwardedPermissions = async (req, res, next) => {
   try {
     const { departmentId } = req.params;
-    const { targetAudience, allowedUsers } = req.body;
+    const { accessControl, targetAudience, priority, remarks, allowedUsers } = req.body;
     const document = req.document;
 
     const isSuperAdmin = req.user.role === 'super_admin';
@@ -612,19 +794,24 @@ export const updateForwardedPermissions = async (req, res, next) => {
       });
     }
 
-    const forwardedDept = document.forwardedDepartments.find(
-      (f) => f.departmentId.toString() === departmentId.toString()
+    const updateData = {};
+    const chosenAccess = accessControl || targetAudience;
+    if (chosenAccess) updateData.accessControl = chosenAccess.toLowerCase();
+    if (priority) updateData.priority = priority.toLowerCase();
+    if (remarks !== undefined) updateData.remarks = remarks;
+
+    const forwardRecord = await DocumentForward.findOneAndUpdate(
+      { documentId: document._id, targetDepartmentId: departmentId, isDeletedForDept: false },
+      { $set: updateData },
+      { new: true }
     );
 
-    if (!forwardedDept) {
+    if (!forwardRecord) {
       return res.status(404).json({
         success: false,
         message: 'This document is not currently forwarded to this department',
       });
     }
-
-    if (targetAudience) forwardedDept.targetAudience = targetAudience;
-    await document.save();
 
     // Update specific permissions in DocumentPermission collection
     if (allowedUsers && Array.isArray(allowedUsers)) {
@@ -653,22 +840,24 @@ export const updateForwardedPermissions = async (req, res, next) => {
     }
 
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
       user: req.user,
-      action: 'UPDATE_FORWARDED_PERMISSIONS',
-      description: `Permissions for forwarded department updated by ${req.user.name || req.user.email}`,
-      details: { departmentId, targetAudience },
+      action: 'Forwarded Permissions Updated',
+      details: `Permissions for forwarded department updated by ${req.user.name || req.user.email}`,
+      req,
     });
 
     res.status(200).json({
       success: true,
       message: 'Forwarded department permissions updated successfully',
-      data: forwardedDept,
+      data: forwardRecord,
     });
   } catch (error) {
     next(error);
   }
 };
+;
 
 /**
  * 10. Add Remarks from Accessor
@@ -938,16 +1127,15 @@ export const departmentDelete = async (req, res, next) => {
       document.isDeletedForOriginDept = true;
       document.originDeptDeletedAt = new Date();
       document.originDeptDeletedBy = req.user.id;
+      await document.save();
     } else {
-      const forwardedDept = document.forwardedDepartments.find(
-        (f) => f.departmentId.toString() === userDeptId
+      const forwardedRecord = await DocumentForward.findOneAndUpdate(
+        { documentId: document._id, targetDepartmentId: userDeptId, isDeletedForDept: false },
+        { isDeletedForDept: true, deletedAt: new Date(), deletedBy: req.user.id },
+        { new: true }
       );
 
-      if (forwardedDept) {
-        forwardedDept.isDeletedForDept = true;
-        forwardedDept.deletedAt = new Date();
-        forwardedDept.deletedBy = req.user.id;
-      } else if (req.user.role !== 'super_admin') {
+      if (!forwardedRecord && req.user.role !== 'super_admin') {
         return res.status(403).json({
           success: false,
           message: 'You can only delete files for your assigned department',
@@ -955,13 +1143,13 @@ export const departmentDelete = async (req, res, next) => {
       }
     }
 
-    await document.save();
-
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
       user: req.user,
-      action: 'DEPT_ADMIN_DELETED_FILE',
-      description: `File access deleted for department by ${req.user.name || req.user.email}. Super Admin retains global access.`,
+      action: 'File Deleted For Department',
+      details: `File access deleted for department by ${req.user.name || req.user.email}. Super Admin retains global access.`,
+      req,
     });
 
     res.status(200).json({
@@ -995,7 +1183,10 @@ export const permanentDelete = async (req, res, next) => {
       });
     }
 
-    // Try deleting physical file from disk
+    // Clean up organized physical document folder (files, logo, replicas)
+    removeDocumentFolder(document._id);
+
+    // Fallback: Try deleting physical file from legacy disk location
     if (document.filePath && fs.existsSync(document.filePath)) {
       try {
         fs.unlinkSync(document.filePath);
@@ -1004,16 +1195,32 @@ export const permanentDelete = async (req, res, next) => {
       }
     }
 
+    // Fallback: Try deleting physical logo file from legacy disk location
+    if (document.logoFileName) {
+      const logoPath = path.resolve(process.cwd(), 'uploads', document.logoFileName);
+      if (fs.existsSync(logoPath)) {
+        try {
+          fs.unlinkSync(logoPath);
+        } catch (err) {
+          console.warn('Physical logo deletion warning:', err.message);
+        }
+      }
+    }
+
     // Clean up all permissions in DocumentPermission collection
     await DocumentPermission.deleteMany({ documentId: id });
 
+    // Clean up all forwards in DocumentForward collection
+    await DocumentForward.deleteMany({ documentId: id });
+
     // Log the permanent deletion action before removing the document
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
       user: req.user,
       action: 'PERMANENT_DELETE',
-      description: `Document '${document.title}' was permanently deleted and purged by Super Admin ${req.user.name || req.user.email}`,
-      details: { title: document.title, originalName: document.originalName },
+      details: `Document '${document.title}' was permanently deleted and purged by Super Admin ${req.user.name || req.user.email}`,
+      req,
     });
 
     await Document.findByIdAndDelete(id);
@@ -1028,20 +1235,102 @@ export const permanentDelete = async (req, res, next) => {
 };
 
 /**
- * 18. Get Document Activity Logs
+ * 18. Get Document Activity Logs (Role-Based Aggregation Pipeline)
+ * - super_admin: views all logs for the file
+ * - department_admin: views only logs created by users of their department
+ * - employee: views only their own logs
  */
 export const getDocumentLogs = async (req, res, next) => {
   try {
     const { page, pageSize, skip } = getPaginationParams(req.query);
+    const { id } = req.params;
 
-    const [total, logs] = await Promise.all([
-      DocumentLog.countDocuments({ documentId: req.params.id }),
-      DocumentLog.find({ documentId: req.params.id })
-        .populate('performedBy', 'name email role')
-        .sort({ timestamp: -1 })
-        .skip(skip)
-        .limit(pageSize),
-    ]);
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid document ID format',
+      });
+    }
+
+    const pipeline = [];
+
+    // Stage 1: Match the specific document/file
+    pipeline.push({
+      $match: { fileId: new mongoose.Types.ObjectId(id) },
+    });
+
+    // Stage 2: Role-based isolation
+    if (req.user.role === 'employee') {
+      // Employees ONLY see logs performed by themselves
+      pipeline.push({
+        $match: { userId: new mongoose.Types.ObjectId(req.user.id || req.user._id) },
+      });
+    } else if (req.user.role === 'department_admin') {
+      // Department Admins ONLY see logs by users in their own department
+      const deptId = req.user.departmentId?.toString();
+      if (!deptId) {
+        return res.status(200).json(
+          formatPaginatedResponse({
+            total: 0,
+            page,
+            pageSize,
+            data: [],
+          })
+        );
+      }
+
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'userId',
+            foreignField: '_id',
+            as: 'userDetails',
+          },
+        },
+        {
+          $unwind: '$userDetails',
+        },
+        {
+          $match: {
+            'userDetails.departmentId': new mongoose.Types.ObjectId(deptId),
+          },
+        }
+      );
+    }
+    // Super Admin: Bypasses user filtering completely — sees ALL logs
+
+    // Stage 3: Facet for single-query pagination + field projection (_id -> id)
+    pipeline.push({
+      $facet: {
+        metadata: [{ $count: 'total' }],
+        data: [
+          { $sort: { timestamp: -1 } },
+          { $skip: skip },
+          { $limit: pageSize },
+          {
+            $project: {
+              id: '$_id',
+              _id: 0,
+              fileId: 1,
+              fileNumber: 1,
+              userId: 1,
+              userName: 1,
+              userRole: 1,
+              action: 1,
+              details: 1,
+              ipAddress: 1,
+              timestamp: 1,
+            },
+          },
+        ],
+      },
+    });
+
+    const [result] = await DocumentLog.aggregate(pipeline);
+
+    const total = result?.metadata[0]?.total || 0;
+    const logs = result?.data || [];
 
     res.status(200).json(
       formatPaginatedResponse({
@@ -1051,6 +1340,48 @@ export const getDocumentLogs = async (req, res, next) => {
         data: logs,
       })
     );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 19. Create Document Activity Log Entry
+ */
+export const createDocumentLog = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { action, details, fileNumber } = req.body;
+
+    if (!action) {
+      return res.status(400).json({
+        success: false,
+        message: 'Action is required',
+      });
+    }
+
+    const document = req.document || (await Document.findById(id));
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document not found',
+      });
+    }
+
+    const log = await recordDocumentLog({
+      fileId: document._id,
+      fileNumber: fileNumber || document.fileNumber || '',
+      user: req.user,
+      action,
+      details: details || '',
+      req,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Document activity log created successfully',
+      data: log,
+    });
   } catch (error) {
     next(error);
   }

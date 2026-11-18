@@ -2,6 +2,7 @@ import { DocumentReplica } from '../models/document.replica.model.js';
 import { Document } from '../models/document.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
+import { moveToDocumentFolder } from '../utils/file.util.js';
 
 /**
  * 1. Employee Creates Replica / Suggests Changes on an Uploaded File
@@ -27,9 +28,10 @@ export const createReplica = async (req, res, next) => {
 
     if (req.file) {
       revisedOriginalName = req.file.originalname;
-      revisedStoredFilename = req.file.filename;
-      revisedFilePath = req.file.path;
-      revisedFileUrl = `/uploads/${req.file.filename}`;
+      const movedReplica = moveToDocumentFolder(req.file.path, document._id, 'replica');
+      revisedStoredFilename = movedReplica ? movedReplica.filename : req.file.filename;
+      revisedFilePath = movedReplica ? movedReplica.destPath : req.file.path;
+      revisedFileUrl = movedReplica ? movedReplica.fileUrl : `/uploads/${req.file.filename}`;
     }
 
     const replica = await DocumentReplica.create({

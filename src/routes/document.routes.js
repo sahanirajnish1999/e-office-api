@@ -18,6 +18,7 @@ import {
   departmentDelete,
   permanentDelete,
   getDocumentLogs,
+  createDocumentLog,
 } from '../controllers/document.controller.js';
 import {
   createReplica,
@@ -27,7 +28,8 @@ import {
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 import { authorizeRoles } from '../middlewares/role.middleware.js';
 import { checkDocumentAccess } from '../middlewares/document.access.middleware.js';
-import { upload } from '../middlewares/upload.middleware.js';
+import { checkPermission } from '../middlewares/permission.middleware.js';
+import { upload, handleMulterError } from '../middlewares/upload.middleware.js';
 
 const router = Router();
 
@@ -38,14 +40,20 @@ router.use(authenticateToken);
 router.post(
   '/',
   authorizeRoles('super_admin', 'department_admin'),
-  upload.single('file'),
+  checkPermission('canUploadDocuments'),
+  upload.fields([
+    { name: 'file', maxCount: 1 },
+    { name: 'logo', maxCount: 1 },
+  ]),
+  handleMulterError,
   createDocument
 );
-router.get('/', searchAndListDocuments);
+router.get('/', checkPermission('canSearchFiles'), searchAndListDocuments);
 
 // 2. Document Details & Logs
-router.get('/:id', checkDocumentAccess('canView'), getDocumentById);
-router.get('/:id/logs', checkDocumentAccess('canView'), getDocumentLogs);
+router.get('/:id', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentById);
+router.get('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentLogs);
+router.post('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), createDocumentLog);
 
 // 3. Permissions Management (Pattern B: Handles 500 - 2,000+ users cleanly)
 router.patch(
@@ -88,12 +96,13 @@ router.patch(
 );
 
 // 5. Interactive Collaboration: Remarks, Stickies & Notings
-router.post('/:id/remarks', checkDocumentAccess('canRemark'), addRemark);
-router.post('/:id/stickies', checkDocumentAccess('canView'), addSticky);
-router.post('/:id/notings', checkDocumentAccess('canView'), addNoting);
+router.post('/:id/remarks', checkPermission('canAddRemarks'), checkDocumentAccess('canRemark'), addRemark);
+router.post('/:id/stickies', checkPermission('canUseStickyNotes'), checkDocumentAccess('canView'), addSticky);
+router.post('/:id/notings', checkPermission('canAddOfficialNoting'), checkDocumentAccess('canView'), addNoting);
 router.patch(
   '/:id/notings/:notingId/approve',
   authorizeRoles('super_admin', 'department_admin'),
+  checkPermission('canApproveNoting'),
   checkDocumentAccess('canView'),
   approveNoting
 );
@@ -101,26 +110,30 @@ router.patch(
 // 6. Replicas / Suggested Changes
 router.post(
   '/:id/replicas',
+  checkPermission('canCreateReplica'),
   checkDocumentAccess('canSuggestChange'),
   upload.single('file'),
+  handleMulterError,
   createReplica
 );
-router.get('/:id/replicas', checkDocumentAccess('canView'), listReplicas);
+router.get('/:id/replicas', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), listReplicas);
 router.patch(
   '/replicas/:replicaId/review',
   authorizeRoles('super_admin', 'department_admin'),
+  checkPermission('canViewApprovals'),
   reviewReplica
 );
 
 // 7. Deletions & Withdrawals
-router.patch('/:id/withdraw', checkDocumentAccess('canView'), withdrawFile);
-router.delete('/:id/my-access', checkDocumentAccess('canView'), employeeSelfDelete);
+router.patch('/:id/withdraw', checkPermission('canWithdrawFile'), checkDocumentAccess('canView'), withdrawFile);
+router.delete('/:id/my-access', checkPermission('canDeletePartial'), checkDocumentAccess('canView'), employeeSelfDelete);
 router.delete(
   '/:id/department',
   authorizeRoles('super_admin', 'department_admin'),
+  checkPermission('canDeletePartial'),
   checkDocumentAccess('canView'),
   departmentDelete
 );
-router.delete('/:id/permanent', authorizeRoles('super_admin'), permanentDelete);
+router.delete('/:id/permanent', authorizeRoles('super_admin'), checkPermission('canDeletePermanent'), permanentDelete);
 
 export default router;

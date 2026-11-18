@@ -19,11 +19,18 @@ const documentPermissionSchema = new mongoose.Schema(
       ref: 'Department',
       default: null,
     },
+    // Granular File Access Permissions
     permissions: {
       canView: { type: Boolean, default: true },
       canRemark: { type: Boolean, default: true },
       canSuggestChange: { type: Boolean, default: true },
       canDownload: { type: Boolean, default: true },
+      canHighlightDocuments: { type: Boolean, default: true },
+      canUseStickyNotes: { type: Boolean, default: true },
+      canAddOfficialNoting: { type: Boolean, default: false },
+      canApproveNoting: { type: Boolean, default: false },
+      canWithdrawFile: { type: Boolean, default: false },
+      canDeletePartial: { type: Boolean, default: false },
     },
     grantedBy: {
       type: mongoose.Schema.Types.ObjectId,

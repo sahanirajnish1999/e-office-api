@@ -1,7 +1,7 @@
 import { User } from '../models/user.model.js';
 import { generateToken } from '../utils/token.util.js';
 import { hashToken } from '../utils/crypto.util.js';
-import { sendPasswordResetEmail } from '../utils/mail.util.js';
+import { sendPasswordResetEmail, sendAccountCreatedEmail } from '../utils/mail.util.js';
 
 export const register = async (req, res, next) => {
   try {
@@ -40,6 +40,19 @@ export const register = async (req, res, next) => {
       password,
       role: assignedRole,
     });
+
+    // Send account creation email with login credentials
+    try {
+      await sendAccountCreatedEmail({
+        email: user.email,
+        name: user.name,
+        userId: user._id,
+        password,
+        role: user.role,
+      });
+    } catch (mailError) {
+      console.error('Failed to send welcome email to Super Admin:', mailError.message);
+    }
 
     const token = generateToken({
       id: user._id,
