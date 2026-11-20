@@ -31,17 +31,6 @@ export const checkDocumentAccess = (requiredPermission = 'canView') => {
       const userIdStr = req.user.id.toString();
       const userDeptStr = req.user.departmentId ? req.user.departmentId.toString() : null;
 
-      // Check if employee removed this file from their personal view
-      const isHidden = document.hiddenForUsers.some(
-        (h) => h.userId.toString() === userIdStr
-      );
-      if (isHidden) {
-        return res.status(404).json({
-          success: false,
-          message: 'Document not found or has been removed from your personal access',
-        });
-      }
-
       let hasAccess = false;
       let userPermission = {
         canView: false,

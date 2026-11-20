@@ -9,6 +9,8 @@ import { DocumentForward } from '../models/document.forward.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../utils/file.util.js';
+import { isValidObjectId } from '../utils/validator.util.js';
+import { generateNextFileNumber } from '../utils/document.util.js';
 
 /**
  * 1. Upload & Create Document
@@ -57,16 +59,7 @@ export const createDocument = async (req, res, next) => {
 
     const finalTitle = (title || fileTitle || '').trim();
     const finalSubject = (subject || fileSubject || '').trim();
-    const finalFileNumber = (fileNumber || '').trim().toUpperCase();
     const finalRegistrationDate = registrationDate || fileDate;
-
-    if (!finalFileNumber) {
-      cleanupTempFiles();
-      return res.status(400).json({
-        success: false,
-        message: 'fileNumber is required (e.g., MOR/CIVIL/2026/F-114)',
-      });
-    }
 
     if (!finalTitle || !finalSubject) {
       cleanupTempFiles();
@@ -106,23 +99,13 @@ export const createDocument = async (req, res, next) => {
       });
     }
 
-    // Check if fileNumber already exists
-    const existingFile = await Document.findOne({ fileNumber: finalFileNumber });
-    if (existingFile) {
-      cleanupTempFiles();
-      return res.status(409).json({
-        success: false,
-        message: `A document with file number '${finalFileNumber}' already exists`,
-      });
-    }
-
-    // Determine target department
+    // Determine target department (resolved early so dept.code is available for file number generation)
     let targetDeptId = departmentId;
     if (req.user.role === 'department_admin') {
       targetDeptId = req.user.departmentId;
     }
 
-    if (!targetDeptId) {
+    if (!targetDeptId || !isValidObjectId(targetDeptId)) {
       cleanupTempFiles();
       return res.status(400).json({
         success: false,
@@ -136,6 +119,22 @@ export const createDocument = async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message: 'Target department does not exist',
+      });
+    }
+
+    // Auto-generate fileNumber if not provided by caller
+    let finalFileNumber = (fileNumber || '').trim().toUpperCase();
+    if (!finalFileNumber) {
+      finalFileNumber = await generateNextFileNumber(targetDeptId, dept.code);
+    }
+
+    // Check if fileNumber already exists (guards both manual and auto-generated values)
+    const existingFile = await Document.findOne({ fileNumber: finalFileNumber });
+    if (existingFile) {
+      cleanupTempFiles();
+      return res.status(409).json({
+        success: false,
+        message: `A document with file number '${finalFileNumber}' already exists`,
       });
     }
 
@@ -328,14 +327,9 @@ export const searchAndListDocuments = async (req, res, next) => {
         isDeletedForDept: false,
       });
 
-      query.$and = [
-        { 'hiddenForUsers.userId': { $ne: userId } },
-        {
-          $or: [
-            { departmentId: userDeptId, isDeletedForOriginDept: false },
-            { _id: { $in: forwardedDocIds } },
-          ],
-        },
+      query.$or = [
+        { departmentId: userDeptId, isDeletedForOriginDept: false },
+        { _id: { $in: forwardedDocIds } },
       ];
     } else {
       // Employee scoping
@@ -360,19 +354,14 @@ export const searchAndListDocuments = async (req, res, next) => {
         originDeptAccessList.push('restricted');
       }
 
-      query.$and = [
-        { 'hiddenForUsers.userId': { $ne: userId } },
+      query.$or = [
         {
-          $or: [
-            {
-              departmentId: userDeptId,
-              isDeletedForOriginDept: false,
-              accessControl: { $in: originDeptAccessList },
-            },
-            { _id: { $in: forwardedDocIds } },
-            { _id: { $in: userPermittedDocIds } },
-          ],
+          departmentId: userDeptId,
+          isDeletedForOriginDept: false,
+          accessControl: { $in: originDeptAccessList },
         },
+        { _id: { $in: forwardedDocIds } },
+        { _id: { $in: userPermittedDocIds } },
       ];
     }
 
@@ -602,6 +591,14 @@ export const grantDocumentPermissions = async (req, res, next) => {
       });
     }
 
+    const invalidUser = allowedUsers.find((u) => !isValidObjectId(u.userId));
+    if (invalidUser) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid userId format: ${invalidUser.userId}`,
+      });
+    }
+
     const document = req.document;
 
     const bulkOps = allowedUsers.map((u) => ({
@@ -695,11 +692,21 @@ export const forwardDocument = async (req, res, next) => {
     } = req.body;
     const document = req.document;
 
-    if (!targetDepartmentId) {
+    if (!targetDepartmentId || !isValidObjectId(targetDepartmentId)) {
       return res.status(400).json({
         success: false,
-        message: 'targetDepartmentId is required to forward document',
+        message: 'A valid targetDepartmentId is required to forward document',
       });
+    }
+
+    if (allowedUsers && Array.isArray(allowedUsers)) {
+      const invalidUser = allowedUsers.find((u) => !isValidObjectId(u.userId));
+      if (invalidUser) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid userId format in allowedUsers: ${invalidUser.userId}`,
+        });
+      }
     }
 
     const targetDept = await Department.findById(targetDepartmentId);
@@ -1080,17 +1087,10 @@ export const employeeSelfDelete = async (req, res, next) => {
     const document = req.document;
     const userId = req.user.id;
 
-    const alreadyHidden = document.hiddenForUsers.some(
-      (h) => h.userId.toString() === userId.toString()
-    );
-
-    if (!alreadyHidden) {
-      document.hiddenForUsers.push({
-        userId,
-        removedAt: new Date(),
-      });
-      await document.save();
-    }
+    await DocumentPermission.findOneAndDelete({
+      documentId: document._id,
+      userId,
+    });
 
     await recordDocumentLog({
       documentId: document._id,
@@ -1101,7 +1101,7 @@ export const employeeSelfDelete = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'Document removed from your personal access. Other employees and department access remain unaffected.',
+      message: 'Document permission removed from your personal access.',
     });
   } catch (error) {
     next(error);
@@ -1317,6 +1317,8 @@ export const getDocumentLogs = async (req, res, next) => {
               userId: 1,
               userName: 1,
               userRole: 1,
+              departmentId: 1,
+              departmentName: 1,
               action: 1,
               details: 1,
               ipAddress: 1,
@@ -1329,7 +1331,7 @@ export const getDocumentLogs = async (req, res, next) => {
 
     const [result] = await DocumentLog.aggregate(pipeline);
 
-    const total = result?.metadata[0]?.total || 0;
+    const total = result?.metadata?.[0]?.total || 0;
     const logs = result?.data || [];
 
     res.status(200).json(
@@ -1381,6 +1383,160 @@ export const createDocumentLog = async (req, res, next) => {
       success: true,
       message: 'Document activity log created successfully',
       data: log,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 20. Get All Document Activity Logs (Global, Super Admin only)
+ * Filters: employeeId/userId, employeeName/userName, onlyEmployees, departmentId, departmentName, fileNumber, action
+ * Time Ranges: all_time (default), today, 7_days, specific_month (month=YYYY-MM), custom (startDate, endDate, dateFrom, dateTo)
+ * Sorting: newest (timestamp: -1, default), oldest (timestamp: 1)
+ */
+export const getAllDocumentLogs = async (req, res, next) => {
+  try {
+    const { page, pageSize, skip } = getPaginationParams(req.query);
+    const {
+      employeeId,
+      userId,
+      employeeName,
+      userName,
+      onlyEmployees,
+      departmentId,
+      departmentName,
+      fileNumber,
+      action,
+      sort,
+      sortBy,
+      timeRange,
+      month,
+      startDate,
+      endDate,
+      dateFrom,
+      dateTo,
+    } = req.query;
+
+    const query = {};
+
+    // 1. Employee / User filters
+    const targetUserId = employeeId || userId;
+    if (targetUserId && mongoose.Types.ObjectId.isValid(targetUserId)) {
+      query.userId = new mongoose.Types.ObjectId(targetUserId);
+    }
+
+    const targetUserName = (employeeName || userName || '').trim();
+    if (targetUserName) {
+      query.userName = new RegExp(targetUserName, 'i');
+    }
+
+    if (onlyEmployees === 'true' || onlyEmployees === true) {
+      query.userRole = 'employee';
+    }
+
+    // 2. Department filters
+    if (departmentId && mongoose.Types.ObjectId.isValid(departmentId)) {
+      query.departmentId = new mongoose.Types.ObjectId(departmentId);
+    }
+
+    if (departmentName && departmentName.trim()) {
+      query.departmentName = new RegExp(departmentName.trim(), 'i');
+    }
+
+    // 3. File Number & Action filters
+    if (fileNumber && fileNumber.trim()) {
+      query.fileNumber = new RegExp(fileNumber.trim(), 'i');
+    }
+
+    if (action && action.trim()) {
+      query.action = new RegExp(action.trim(), 'i');
+    }
+
+    // 4. Time Range Filter: all_time | today | 7_days | specific_month | custom
+    const appliedRange = (timeRange || '').toLowerCase();
+    const now = new Date();
+
+    if (appliedRange === 'today') {
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      query.timestamp = { $gte: startOfToday, $lte: endOfToday };
+    } else if (appliedRange === '7_days' || appliedRange === '7days') {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      query.timestamp = { $gte: sevenDaysAgo };
+    } else if (appliedRange === 'specific_month' && month) {
+      const [yearStr, monthStr] = month.split('-');
+      const y = parseInt(yearStr, 10);
+      const m = parseInt(monthStr, 10) - 1;
+      const startOfMonth = new Date(Date.UTC(y, m, 1, 0, 0, 0, 0));
+      const endOfMonth = new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999));
+      query.timestamp = { $gte: startOfMonth, $lte: endOfMonth };
+    } else if (appliedRange === 'custom' || startDate || dateFrom) {
+      const from = startDate || dateFrom;
+      const to = endDate || dateTo;
+      query.timestamp = {};
+      if (from) {
+        const s = new Date(from);
+        s.setHours(0, 0, 0, 0);
+        query.timestamp.$gte = s;
+      }
+      if (to) {
+        const e = new Date(to);
+        e.setHours(23, 59, 59, 999);
+        query.timestamp.$lte = e;
+      }
+    }
+
+    // 5. Sorting: newest (timestamp: -1) vs oldest (timestamp: 1)
+    const sortParam = (sort || sortBy || '').toLowerCase();
+    const sortOrder = sortParam === 'oldest' || sortParam === 'asc' ? 1 : -1;
+
+    // 6. Single aggregation with $facet for pagination + count in 1 round trip
+    const [result] = await DocumentLog.aggregate([
+      { $match: query },
+      { $sort: { timestamp: sortOrder } },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $project: {
+                id: '$_id',
+                _id: 0,
+                fileId: 1,
+                fileNumber: 1,
+                userId: 1,
+                userName: 1,
+                userRole: 1,
+                departmentId: 1,
+                departmentName: 1,
+                action: 1,
+                details: 1,
+                ipAddress: 1,
+                timestamp: 1,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const total = result?.metadata?.[0]?.total || 0;
+    const logs = result?.data || [];
+
+    const formatted = formatPaginatedResponse({
+      total,
+      page,
+      pageSize,
+      data: logs,
+    });
+
+    res.status(200).json({
+      ...formatted,
+      timeRangeApplied: appliedRange || 'all_time',
+      sortOrder: sortOrder === 1 ? 'oldest' : 'newest',
     });
   } catch (error) {
     next(error);

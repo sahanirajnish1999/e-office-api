@@ -14,4 +14,5 @@ export const appConfig = {
     pass: process.env.SMTP_PASS || '',
   },
   uploadDir: process.env.UPLOAD_DIR || 'uploads',
+  employeeIdPrefix: (process.env.EMPLOYEE_ID_PREFIX || 'MOR').trim().toUpperCase(),
 };

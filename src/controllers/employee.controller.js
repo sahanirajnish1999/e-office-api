@@ -2,6 +2,10 @@ import { User } from '../models/user.model.js';
 import { Department } from '../models/department.model.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { sendAccountCreatedEmail } from '../utils/mail.util.js';
+import { generateNextEmployeeId } from '../utils/user.util.js';
+import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone, isValidObjectId } from '../utils/validator.util.js';
+
+export { generateNextEmployeeId };
 
 export const createEmployee = async (req, res, next) => {
   try {
@@ -24,6 +28,20 @@ export const createEmployee = async (req, res, next) => {
       });
     }
 
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address (e.g. employee@example.com)',
+      });
+    }
+
+    if (phone && !isValidPhone(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid 10-digit mobile number',
+      });
+    }
+
     // Determine target department
     let targetDeptId = req.user.departmentId;
 
@@ -33,6 +51,12 @@ export const createEmployee = async (req, res, next) => {
         return res.status(400).json({
           success: false,
           message: 'Super Admin must specify a departmentId to assign the employee',
+        });
+      }
+      if (!isValidObjectId(departmentId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid departmentId format',
         });
       }
       targetDeptId = departmentId;
@@ -54,7 +78,9 @@ export const createEmployee = async (req, res, next) => {
       });
     }
 
-    const existing = await User.findOne({ email });
+    const normalizedEmail = normalizeEmail(email);
+
+    const existing = await User.findOne({ email: normalizedEmail });
     if (existing) {
       return res.status(409).json({
         success: false,
@@ -62,14 +88,20 @@ export const createEmployee = async (req, res, next) => {
       });
     }
 
+    // Auto-generate employeeId if not provided (e.g. "MOR/ENG/045")
+    let finalEmployeeId = (employeeId || '').trim().toUpperCase();
+    if (!finalEmployeeId) {
+      finalEmployeeId = await generateNextEmployeeId(dept._id, dept.code);
+    }
+
     const employeeData = {
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password,
       role: 'employee',
       departmentId: targetDeptId,
-      employeeId: employeeId || '',
-      phone: phone || '',
+      employeeId: finalEmployeeId,
+      phone: phone ? normalizePhone(phone) : '',
       designation: designation || 'Staff Employee',
       isAuthorizedOfficer: Boolean(isAuthorizedOfficer),
     };

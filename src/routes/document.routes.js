@@ -18,6 +18,7 @@ import {
   departmentDelete,
   permanentDelete,
   getDocumentLogs,
+  getAllDocumentLogs,
   createDocumentLog,
 } from '../controllers/document.controller.js';
 import {
@@ -51,6 +52,7 @@ router.post(
 router.get('/', checkPermission('canSearchFiles'), searchAndListDocuments);
 
 // 2. Document Details & Logs
+router.get('/logs', authorizeRoles('super_admin'), getAllDocumentLogs);
 router.get('/:id', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentById);
 router.get('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentLogs);
 router.post('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), createDocumentLog);

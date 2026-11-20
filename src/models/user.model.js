@@ -18,7 +18,7 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
       match: [
-        /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
+        /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
         'Please enter a valid email address',
       ],
     },
@@ -47,6 +47,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: '',
+      validate: {
+        validator: function (v) {
+          if (!v) return true;
+          const cleaned = v.trim().replace(/[\s().-]/g, '');
+          return /^(\+?[1-9]\d{0,3})?[6-9]\d{9}$/.test(cleaned) || /^\+[1-9]\d{9,14}$/.test(cleaned);
+        },
+        message: 'Please provide a valid 10-digit mobile number',
+      },
     },
     designation: {
       type: String,

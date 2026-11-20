@@ -153,14 +153,6 @@ const documentSchema = new mongoose.Schema(
     isDeletedForOriginDept: { type: Boolean, default: false },
     originDeptDeletedAt: Date,
     originDeptDeletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-
-    // Employee Self-Removal (Hides file for this specific employee only)
-    hiddenForUsers: [
-      {
-        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        removedAt: { type: Date, default: Date.now },
-      },
-    ],
   },
   {
     timestamps: true,

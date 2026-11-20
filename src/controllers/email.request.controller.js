@@ -2,6 +2,7 @@ import { EmailRequest } from '../models/email.request.model.js';
 import { User } from '../models/user.model.js';
 import { sendEmailChangeNotification } from '../utils/mail.util.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
+import { isValidEmail, normalizeEmail } from '../utils/validator.util.js';
 
 export const requestEmailChange = async (req, res, next) => {
   try {
@@ -14,7 +15,14 @@ export const requestEmailChange = async (req, res, next) => {
       });
     }
 
-    const normalizedEmail = requestedEmail.trim().toLowerCase();
+    if (!isValidEmail(requestedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address (e.g. user@example.com)',
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(requestedEmail);
 
     // Check if user is trying to change to their current email
     const currentUser = await User.findById(req.user.id);

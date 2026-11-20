@@ -16,6 +16,11 @@ import { sendAccountCreatedEmail } from '../src/utils/mail.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime } from '../src/controllers/user.controller.js';
+import { getAllDocumentLogs } from '../src/controllers/document.controller.js';
+import { generateNextEmployeeId, createEmployee } from '../src/controllers/employee.controller.js';
+import { createDepartmentAdmin } from '../src/controllers/user.controller.js';
+import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone, isValidObjectId } from '../src/utils/validator.util.js';
+import { generateNextFileNumber } from '../src/utils/document.util.js';
 
 describe('Project Tests', () => {
   it('should generate and verify JWT token', () => {
@@ -170,6 +175,8 @@ describe('Project Tests', () => {
     assert.ok(logPaths.includes('fileNumber'));
     assert.ok(logPaths.includes('userName'));
     assert.ok(logPaths.includes('userRole'));
+    assert.ok(logPaths.includes('departmentId'));
+    assert.ok(logPaths.includes('departmentName'));
     assert.ok(logPaths.includes('action'));
     assert.ok(logPaths.includes('details'));
     assert.ok(logPaths.includes('ipAddress'));
@@ -182,6 +189,8 @@ describe('Project Tests', () => {
       fileNumber: 'IR/CIV/2026/0012',
       userName: 'Vasu Tyagi',
       userRole: 'super_admin',
+      departmentId: '650c1f1e1f1e1f1e1f1e9999',
+      departmentName: 'Civil Engineering',
       action: 'File Created',
       details: 'Created electronic file IR/CIV/2026/0012',
       ipAddress: '127.0.0.1',
@@ -195,6 +204,7 @@ describe('Project Tests', () => {
     assert.strictEqual(json.updatedAt, undefined);
     assert.ok(json.timestamp);
     assert.strictEqual(json.fileNumber, 'IR/CIV/2026/0012');
+    assert.strictEqual(json.departmentName, 'Civil Engineering');
   });
 
   it('should validate DocumentPermission model schema definition', () => {
@@ -473,5 +483,302 @@ describe('Project Tests', () => {
     assert.strictEqual(dept.adminDesignation, 'Director');
     assert.strictEqual(dept.employeesCount, 5);
     assert.strictEqual(dept.filesCount, 12);
+  });
+
+  it('should verify getAllDocumentLogs uses aggregation pipeline with employee, department, timeRange, and sort filters', async () => {
+    assert.strictEqual(typeof getAllDocumentLogs, 'function');
+
+    const originalAggregate = DocumentLog.aggregate;
+    const mockLogId = '650c1f1e1f1e1f1e1f1e8888';
+    const mockDeptId = '650c1f1e1f1e1f1e1f1e9999';
+    const mockUserId = '650c1f1e1f1e1f1e1f1e1111';
+    let capturedPipeline = null;
+
+    DocumentLog.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          metadata: [{ total: 1 }],
+          data: [
+            {
+              id: mockLogId,
+              fileId: '650c1f1e1f1e1f1e1f1e2222',
+              fileNumber: 'IR/CIV/2026/0012',
+              userId: mockUserId,
+              userName: 'Test Employee',
+              userRole: 'employee',
+              departmentId: mockDeptId,
+              departmentName: 'Civil Engineering',
+              action: 'File Created',
+              details: 'Created file IR/CIV/2026/0012',
+              ipAddress: '127.0.0.1',
+              timestamp: new Date(),
+            },
+          ],
+        },
+      ];
+    };
+
+    let response = null;
+    const mockRes = {
+      status() {
+        return {
+          json(payload) {
+            response = payload;
+          },
+        };
+      },
+    };
+
+    await getAllDocumentLogs(
+      {
+        query: {
+          page: '1',
+          pageSize: '10',
+          employeeId: mockUserId,
+          departmentId: mockDeptId,
+          timeRange: '7_days',
+          sort: 'oldest',
+        },
+      },
+      mockRes,
+      () => {}
+    );
+
+    // Restore original
+    DocumentLog.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    const matchStage = capturedPipeline.find((stage) => stage.$match);
+    assert.ok(matchStage);
+    assert.strictEqual(matchStage.$match.userId.toString(), mockUserId);
+    assert.strictEqual(matchStage.$match.departmentId.toString(), mockDeptId);
+    assert.ok(matchStage.$match.timestamp.$gte instanceof Date);
+
+    const sortStage = capturedPipeline.find((stage) => stage.$sort);
+    assert.ok(sortStage);
+    assert.strictEqual(sortStage.$sort.timestamp, 1);
+
+    const facetStage = capturedPipeline.find((stage) => stage.$facet);
+    assert.ok(facetStage);
+
+    assert.ok(response);
+    assert.strictEqual(response.success, true);
+    assert.strictEqual(response.total, 1);
+    assert.strictEqual(response.data.length, 1);
+    const log = response.data[0];
+    assert.strictEqual(log.id, mockLogId);
+    assert.strictEqual(log._id, undefined);
+    assert.strictEqual(log.departmentName, 'Civil Engineering');
+    assert.strictEqual(log.userName, 'Test Employee');
+  });
+
+  it('should auto-generate sequential employee ID using zero-loop aggregation pipeline (Option A)', async () => {
+    assert.strictEqual(typeof generateNextEmployeeId, 'function');
+
+    const originalAggregate = User.aggregate;
+    const mockDeptId = '650c1f1e1f1e1f1e1f1e5555';
+    let capturedPipeline = null;
+
+    // Test 1: First employee in department (0 existing -> 001)
+    User.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return []; // No previous records
+    };
+
+    const firstId = await generateNextEmployeeId(mockDeptId, 'ENG');
+    assert.strictEqual(firstId, 'MOR/ENG/001');
+
+    // Verify aggregation pipeline structure
+    assert.ok(capturedPipeline);
+    const matchStage = capturedPipeline.find((s) => s.$match);
+    assert.ok(matchStage);
+    assert.strictEqual(matchStage.$match.departmentId.toString(), mockDeptId);
+    assert.ok(matchStage.$match.employeeId.$regex);
+
+    const projectStage = capturedPipeline.find((s) => s.$project);
+    assert.ok(projectStage && projectStage.$project.seq);
+
+    const groupStage = capturedPipeline.find((s) => s.$group);
+    assert.ok(groupStage && groupStage.$group.maxSeq);
+
+    // Test 2: Next employee when 44 exist -> 045
+    User.aggregate = async () => {
+      return [{ _id: null, maxSeq: 44 }];
+    };
+
+    const nextId = await generateNextEmployeeId(mockDeptId, 'ENG');
+    assert.strictEqual(nextId, 'MOR/ENG/045');
+
+    // Test 3: Super Admin without department -> HQ code (e.g. MOR/HQ/001)
+    User.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [];
+    };
+
+    const superAdminId = await generateNextEmployeeId(null, 'HQ');
+    assert.strictEqual(superAdminId, 'MOR/HQ/001');
+    const saMatch = capturedPipeline.find((s) => s.$match);
+    assert.strictEqual(saMatch.$match.departmentId, null);
+
+    // Test 4: Department Admin in Civil -> MOR/CIV/001
+    const deptAdminId = await generateNextEmployeeId(mockDeptId, 'CIV');
+    assert.strictEqual(deptAdminId, 'MOR/CIV/001');
+
+    // Restore original
+    User.aggregate = originalAggregate;
+  });
+
+  it('should validate email, phone number, and ObjectId formats using validator utility', () => {
+    // Email Validation
+    assert.strictEqual(isValidEmail('admin@example.com'), true);
+    assert.strictEqual(isValidEmail('officer.dev@mor.gov.in'), true);
+    assert.strictEqual(isValidEmail('support+tag@sub.domain.co'), true);
+    assert.strictEqual(isValidEmail('invalid-email'), false);
+    assert.strictEqual(isValidEmail('user@'), false);
+    assert.strictEqual(isValidEmail('@domain.com'), false);
+    assert.strictEqual(isValidEmail('user@domain'), false);
+    assert.strictEqual(normalizeEmail('  User@Example.COM  '), 'user@example.com');
+
+    // Phone Validation
+    assert.strictEqual(isValidPhone('9876543210'), true);
+    assert.strictEqual(isValidPhone('+919876543210'), true);
+    assert.strictEqual(isValidPhone('+91 98765-43210'), true);
+    assert.strictEqual(isValidPhone('+12025550123'), true);
+    assert.strictEqual(isValidPhone('12345'), false);
+    assert.strictEqual(isValidPhone('abcdefghij'), false);
+    assert.strictEqual(isValidPhone('0000000000'), false);
+    assert.strictEqual(normalizePhone('+91 98765-43210'), '+919876543210');
+
+    // ObjectId Validation
+    assert.strictEqual(isValidObjectId('650c1f1e1f1e1f1e1f1e1f1e'), true);
+    assert.strictEqual(isValidObjectId('invalid-id'), false);
+    assert.strictEqual(isValidObjectId('123'), false);
+    assert.strictEqual(isValidObjectId(''), false);
+    assert.strictEqual(isValidObjectId(null), false);
+  });
+
+  it('should reject employee creation with invalid email, phone, or departmentId format', async () => {
+    let statusCode = null;
+    let responseBody = null;
+
+    const mockRes = {
+      status(code) {
+        statusCode = code;
+        return {
+          json(data) {
+            responseBody = data;
+          },
+        };
+      },
+    };
+
+    // 1. Invalid email
+    await createEmployee(
+      {
+        user: { role: 'super_admin' },
+        body: {
+          name: 'Invalid Email User',
+          email: 'not-an-email',
+          password: 'Password123!',
+          departmentId: '650c1f1e1f1e1f1e1f1e1f1e',
+        },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseBody.message.includes('valid email address'));
+
+    // 2. Invalid phone
+    await createEmployee(
+      {
+        user: { role: 'super_admin' },
+        body: {
+          name: 'Invalid Phone User',
+          email: 'valid.user@example.com',
+          password: 'Password123!',
+          departmentId: '650c1f1e1f1e1f1e1f1e1f1e',
+          phone: '12345',
+        },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseBody.message.includes('valid 10-digit mobile number'));
+
+    // 3. Invalid departmentId (Super Admin)
+    await createEmployee(
+      {
+        user: { role: 'super_admin' },
+        body: {
+          name: 'Invalid Dept User',
+          email: 'valid.user2@example.com',
+          password: 'Password123!',
+          departmentId: 'invalid-id-123',
+        },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.strictEqual(responseBody.message, 'Invalid departmentId format');
+  });
+
+  it('should validate generateNextFileNumber aggregation pipeline structure', async () => {
+    // Verify the aggregation pipeline has the correct 3 stages: $match, $project, $group
+    // We mock Document.aggregate to capture and inspect the pipeline
+    const originalAggregate = Document.aggregate.bind(Document);
+    let capturedPipeline = null;
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return []; // simulate no existing documents
+    };
+
+    const deptId = '650c1f1e1f1e1f1e1f1e1f1e';
+    const result = await generateNextFileNumber(deptId, 'CIVIL');
+
+    // Restore original
+    Document.aggregate = originalAggregate;
+
+    // Verify 3 pipeline stages
+    assert.strictEqual(capturedPipeline.length, 3);
+
+    // Stage 0: $match
+    const matchStage = capturedPipeline[0];
+    assert.ok(matchStage.$match, '$match stage must exist');
+    assert.ok(matchStage.$match.fileNumber.$regex, '$match must filter by fileNumber regex');
+
+    // Stage 1: $project with $toInt + $split
+    const projectStage = capturedPipeline[1];
+    assert.ok(projectStage.$project, '$project stage must exist');
+    assert.ok(projectStage.$project.seq, '$project must extract seq');
+
+    // Stage 2: $group with $max
+    const groupStage = capturedPipeline[2];
+    assert.ok(groupStage.$group, '$group stage must exist');
+    assert.ok(groupStage.$group.maxSeq, '$group must compute maxSeq');
+
+    // No existing docs → result should be F-001
+    const year = new Date().getFullYear();
+    assert.ok(result.endsWith('/F-001'), `Expected result to end with /F-001 but got: ${result}`);
+    assert.ok(result.includes(`/CIVIL/${year}/`), `Expected year ${year} and CIVIL in result: ${result}`);
+  });
+
+  it('should generate correct next file number based on existing max sequence', async () => {
+    const originalAggregate = Document.aggregate.bind(Document);
+
+    // Simulate existing documents with max sequence F-113
+    Document.aggregate = async () => [{ _id: null, maxSeq: 113 }];
+
+    const deptId = '650c1f1e1f1e1f1e1f1e1f1e';
+    const result = await generateNextFileNumber(deptId, 'CIVIL');
+
+    Document.aggregate = originalAggregate;
+
+    // Should produce F-114
+    assert.ok(result.endsWith('/F-114'), `Expected /F-114 but got: ${result}`);
   });
 });

@@ -25,6 +25,17 @@ const documentLogSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    departmentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Department',
+      default: null,
+      index: true,
+    },
+    departmentName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     action: {
       type: String,
       required: true,
@@ -53,6 +64,11 @@ const documentLogSchema = new mongoose.Schema(
     },
   }
 );
+
+// Indexes for fast filtering and high-speed timeline sorting
+documentLogSchema.index({ timestamp: -1 });
+documentLogSchema.index({ departmentId: 1, timestamp: -1 });
+documentLogSchema.index({ userId: 1, timestamp: -1 });
 
 export const DocumentLog = mongoose.model('DocumentLog', documentLogSchema);
 export default DocumentLog;

@@ -3,6 +3,8 @@ import { User } from '../models/user.model.js';
 import { Department } from '../models/department.model.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { sendAccountCreatedEmail } from '../utils/mail.util.js';
+import { generateNextEmployeeId } from '../utils/user.util.js';
+import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone, isValidObjectId } from '../utils/validator.util.js';
 
 export const createDepartmentAdmin = async (req, res, next) => {
   try {
@@ -25,6 +27,29 @@ export const createDepartmentAdmin = async (req, res, next) => {
       });
     }
 
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address (e.g. admin@example.com)',
+      });
+    }
+
+    if (!isValidObjectId(departmentId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid departmentId format',
+      });
+    }
+
+    if (phone && !isValidPhone(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid 10-digit mobile number',
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+
     // Verify department exists
     const department = await Department.findById(departmentId);
     if (!department) {
@@ -35,7 +60,7 @@ export const createDepartmentAdmin = async (req, res, next) => {
     }
 
     // Check if email already registered
-    const existing = await User.findOne({ email });
+    const existing = await User.findOne({ email: normalizedEmail });
     if (existing) {
       return res.status(409).json({
         success: false,
@@ -43,14 +68,20 @@ export const createDepartmentAdmin = async (req, res, next) => {
       });
     }
 
+    // Auto-generate employeeId if not provided (e.g. "MOR/ENG/001")
+    let finalEmployeeId = (employeeId || '').trim().toUpperCase();
+    if (!finalEmployeeId) {
+      finalEmployeeId = await generateNextEmployeeId(department._id, department.code);
+    }
+
     const adminData = {
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password,
       role: 'department_admin',
       departmentId,
-      employeeId: employeeId || '',
-      phone: phone || '',
+      employeeId: finalEmployeeId,
+      phone: phone ? normalizePhone(phone) : '',
       designation: designation || 'Department Administrator',
       isAuthorizedOfficer: isAuthorizedOfficer !== undefined ? Boolean(isAuthorizedOfficer) : true,
     };

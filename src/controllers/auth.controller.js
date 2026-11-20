@@ -2,10 +2,12 @@ import { User } from '../models/user.model.js';
 import { generateToken } from '../utils/token.util.js';
 import { hashToken } from '../utils/crypto.util.js';
 import { sendPasswordResetEmail, sendAccountCreatedEmail } from '../utils/mail.util.js';
+import { generateNextEmployeeId } from '../utils/user.util.js';
+import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone } from '../utils/validator.util.js';
 
 export const register = async (req, res, next) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, phone } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -14,7 +16,30 @@ export const register = async (req, res, next) => {
       });
     }
 
-    const existingUser = await User.findOne({ email });
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address (e.g. user@example.com)',
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long',
+      });
+    }
+
+    if (phone && !isValidPhone(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid 10-digit mobile number',
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(409).json({
         success: false,
@@ -34,11 +59,19 @@ export const register = async (req, res, next) => {
 
     const assignedRole = 'super_admin';
 
+    // Auto-generate Super Admin employee ID with code 'HQ' (e.g. "MOR/HQ/001")
+    let finalEmployeeId = (req.body.employeeId || '').trim().toUpperCase();
+    if (!finalEmployeeId) {
+      finalEmployeeId = await generateNextEmployeeId(null, 'HQ');
+    }
+
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password,
       role: assignedRole,
+      employeeId: finalEmployeeId,
+      phone: phone ? normalizePhone(phone) : '',
     });
 
     // Send account creation email with login credentials
@@ -47,6 +80,7 @@ export const register = async (req, res, next) => {
         email: user.email,
         name: user.name,
         userId: user._id,
+        employeeId: user.employeeId,
         password,
         role: user.role,
       });
@@ -85,7 +119,15 @@ export const login = async (req, res, next) => {
       });
     }
 
-    const user = await User.findOne({ email }).select('+password').populate('departmentId', 'name code');
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address',
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+    const user = await User.findOne({ email: normalizedEmail }).select('+password').populate('departmentId', 'name code');
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -135,7 +177,15 @@ export const forgotPassword = async (req, res, next) => {
       });
     }
 
-    const user = await User.findOne({ email });
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address',
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       // Return 200 to prevent email enumeration attack
       return res.status(200).json({
