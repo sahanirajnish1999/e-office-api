@@ -1,8 +1,9 @@
+import mongoose from 'mongoose';
 import { EmailRequest } from '../models/email.request.model.js';
 import { User } from '../models/user.model.js';
 import { sendEmailChangeNotification } from '../utils/mail.util.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
-import { isValidEmail, normalizeEmail } from '../utils/validator.util.js';
+import { isValidEmail, normalizeEmail, isValidObjectId } from '../utils/validator.util.js';
 
 export const requestEmailChange = async (req, res, next) => {
   try {
@@ -77,15 +78,46 @@ export const requestEmailChange = async (req, res, next) => {
 export const getMyRequests = async (req, res, next) => {
   try {
     const { page, pageSize, skip } = getPaginationParams(req.query);
+    const userId = req.user.id;
+    const matchUserId = isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId;
 
-    const [total, requests] = await Promise.all([
-      EmailRequest.countDocuments({ userId: req.user.id }),
-      EmailRequest.find({ userId: req.user.id })
-        .populate('reviewedBy', 'name email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await EmailRequest.aggregate([
+      { $match: { userId: matchUserId } },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'reviewedBy',
+                foreignField: '_id',
+                as: 'reviewedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$reviewedBy', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const requests = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({
@@ -109,15 +141,53 @@ export const listAllRequests = async (req, res, next) => {
 
     const { page, pageSize, skip } = getPaginationParams(req.query);
 
-    const [total, requests] = await Promise.all([
-      EmailRequest.countDocuments(filter),
-      EmailRequest.find(filter)
-        .populate('userId', 'name email role departmentId')
-        .populate('reviewedBy', 'name email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await EmailRequest.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'userId',
+                foreignField: '_id',
+                as: 'userId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, role: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'reviewedBy',
+                foreignField: '_id',
+                as: 'reviewedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$reviewedBy', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const requests = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({

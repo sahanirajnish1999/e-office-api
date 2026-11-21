@@ -73,28 +73,59 @@ export const getRemarksByDocument = async (req, res, next) => {
     const { page, pageSize, skip } = getPaginationParams(req.query);
     const { search, userId } = req.query;
 
-    const query = { documentId };
+    const matchQuery = {
+      documentId: isValidObjectId(documentId) ? new mongoose.Types.ObjectId(documentId) : documentId,
+    };
 
     if (userId && isValidObjectId(userId)) {
-      query.userId = userId;
+      matchQuery.userId = new mongoose.Types.ObjectId(userId);
     }
 
     if (search && typeof search === 'string' && search.trim()) {
       const searchRegex = new RegExp(search.trim(), 'i');
-      query.$or = [
+      matchQuery.$or = [
         { comment: searchRegex },
         { userName: searchRegex },
       ];
     }
 
-    const [total, remarks] = await Promise.all([
-      DocumentRemark.countDocuments(query),
-      DocumentRemark.find(query)
-        .populate('userId', 'name email designation employeeId departmentId')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await DocumentRemark.aggregate([
+      { $match: matchQuery },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'userId',
+                foreignField: '_id',
+                as: 'userId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, designation: 1, employeeId: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const remarks = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({

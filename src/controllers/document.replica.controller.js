@@ -1,8 +1,10 @@
+import mongoose from 'mongoose';
 import { DocumentReplica } from '../models/document.replica.model.js';
 import { Document } from '../models/document.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { moveToDocumentFolder } from '../utils/file.util.js';
+import { isValidObjectId } from '../utils/validator.util.js';
 
 /**
  * 1. Employee Creates Replica / Suggests Changes on an Uploaded File
@@ -73,15 +75,55 @@ export const listReplicas = async (req, res, next) => {
     const { id } = req.params;
     const { page, pageSize, skip } = getPaginationParams(req.query);
 
-    const [total, replicas] = await Promise.all([
-      DocumentReplica.countDocuments({ parentDocumentId: id }),
-      DocumentReplica.find({ parentDocumentId: id })
-        .populate('suggestedBy', 'name email')
-        .populate('reviewedBy', 'name email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    const matchParentId = isValidObjectId(id) ? new mongoose.Types.ObjectId(id) : id;
+
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await DocumentReplica.aggregate([
+      { $match: { parentDocumentId: matchParentId } },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'suggestedBy',
+                foreignField: '_id',
+                as: 'suggestedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$suggestedBy', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'reviewedBy',
+                foreignField: '_id',
+                as: 'reviewedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$reviewedBy', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const replicas = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({

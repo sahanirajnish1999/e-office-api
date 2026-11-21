@@ -58,27 +58,32 @@
     },
     {
       "key": "remarkId",
-      "value": "673f1b40a92f000000000001",
+      "value": "",
       "type": "string"
     },
     {
       "key": "stickyId",
-      "value": "673f1b40a92f000000000002",
+      "value": "",
       "type": "string"
     },
     {
       "key": "fileId",
-      "value": "673f1b40a92f000000000003",
+      "value": "",
       "type": "string"
     },
     {
       "key": "virtualStickyId",
-      "value": "673f1b40a92f000000000004",
+      "value": "",
       "type": "string"
     },
     {
       "key": "signatureId",
-      "value": "673f1b40a92f000000000005",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "notificationId",
+      "value": "",
       "type": "string"
     }
   ],
@@ -1083,7 +1088,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"status\": \"approved\",\n  \"reviewNotes\": \"Approved after HR verification\"\n}"
+              "raw": "{\n  \"status\": \"approved\", // Permitted: 'approved' | 'rejected'\n  \"reviewNotes\": \"Approved after HR verification\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/email-requests/{{requestId}}/review",
@@ -1145,8 +1150,7 @@
                     {
                       "key": "file",
                       "type": "file",
-                      "description": "Optional: Choose a valid document/PDF file or leave unchecked to create document without physical file attachment",
-                      "disabled": true
+                      "description": "Primary electronic document file (Click 'Select Files' and choose a valid document/PDF)"
                     },
                     {
                       "key": "logo",
@@ -1220,12 +1224,6 @@
                       "key": "allowedUsers",
                       "value": "[{\"userId\": \"{{employeeUserId}}\", \"permissions\": {\"canView\": true, \"canRemark\": true, \"canSuggestChange\": true, \"canDownload\": true, \"canHighlightDocuments\": true, \"canUseStickyNotes\": true, \"canAddOfficialNoting\": true, \"canApproveNoting\": false}}]",
                       "type": "text"
-                    },
-                    {
-                      "key": "pageNumber",
-                      "value": "1",
-                      "type": "text",
-                      "description": "Page number or total pages of the document file (default: 1)"
                     }
                   ]
                 },
@@ -1377,67 +1375,9 @@
                 }
               },
               "response": []
-            }
-          ]
-        },
-        {
-          "name": "6.2 Attached Files & Annexures",
-          "item": [
-            {
-              "name": "1. Upload & Attach File",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [],
-                "body": {
-                  "mode": "formdata",
-                  "formdata": [
-                    {
-                      "key": "file",
-                      "type": "file",
-                      "description": "Select file from computer"
-                    },
-                    {
-                      "key": "pageNumber",
-                      "value": "1",
-                      "type": "text",
-                      "description": "Page number where file belongs"
-                    },
-                    {
-                      "key": "fileSummary",
-                      "value": "Official annexure report with appendix",
-                      "type": "text",
-                      "description": "Summary or note regarding this file"
-                    }
-                  ]
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/files",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "files"
-                  ]
-                },
-                "description": "Uploads and attaches a file to the document with page number and summary."
-              },
-              "response": []
             },
             {
-              "name": "2. List Document Files (Paginated)",
+              "name": "5. Get Document File Counts (Super Admin Only)",
               "request": {
                 "auth": {
                   "type": "bearer",
@@ -1452,930 +1392,25 @@
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/files?page=1&pageSize=10",
+                  "raw": "{{baseUrl}}/api/documents/files/counts",
                   "host": [
                     "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
                     "documents",
-                    "{{documentId}}",
-                    "files"
-                  ],
-                  "query": [
-                    {
-                      "key": "page",
-                      "value": "1"
-                    },
-                    {
-                      "key": "pageSize",
-                      "value": "10"
-                    },
-                    {
-                      "key": "status",
-                      "value": "pending",
-                      "disabled": true
-                    }
-                  ]
-                },
-                "description": "Lists all files attached to this document with status and uploader details."
-              },
-              "response": []
-            },
-            {
-              "name": "3. Get Document File By ID",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/files/{{fileId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
                     "files",
-                    "{{fileId}}"
+                    "counts"
                   ]
                 },
-                "description": "Fetches metadata for a single attached document file."
-              },
-              "response": []
-            },
-            {
-              "name": "4. Review Document File (Approve/Reject)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"status\": \"approve\",\n  \"rejectionReason\": \"\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/files/{{fileId}}/review",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "files",
-                    "{{fileId}}",
-                    "review"
-                  ]
-                },
-                "description": "Admin or approver marks file as 'approve' or 'reject' (with rejectionReason)."
-              },
-              "response": []
-            },
-            {
-              "name": "5. Delete Document File",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/files/{{fileId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "files",
-                    "{{fileId}}"
-                  ]
-                },
-                "description": "Deletes the document file record and unlinks the physical file from disk."
+                "description": "Super Admin API to retrieve total, approved, pending, and rejected document file counts."
               },
               "response": []
             }
           ]
         },
         {
-          "name": "6.3 Document Remarks (CRUD)",
-          "item": [
-            {
-              "name": "1. Add Remark to Document",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"comment\": \"Reviewed the file; the timeline in Section 3 looks achievable.\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/remarks",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "remarks"
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "2. List Document Remarks (Paginated)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/remarks?page=1&pageSize=10",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "remarks"
-                  ],
-                  "query": [
-                    {
-                      "key": "page",
-                      "value": "1"
-                    },
-                    {
-                      "key": "pageSize",
-                      "value": "10"
-                    },
-                    {
-                      "key": "search",
-                      "value": "",
-                      "disabled": true
-                    }
-                  ]
-                },
-                "description": "Returns paginated list of remarks for a specific document with user details."
-              },
-              "response": []
-            },
-            {
-              "name": "3. Update Remark",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"comment\": \"Updated remark: All safety clearances have been verified.\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/remarks/{{remarkId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "remarks",
-                    "{{remarkId}}"
-                  ]
-                },
-                "description": "Allows the author or admin to edit their existing remark comment."
-              },
-              "response": []
-            },
-            {
-              "name": "4. Delete Remark",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/remarks/{{remarkId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "remarks",
-                    "{{remarkId}}"
-                  ]
-                },
-                "description": "Allows the author or admin to delete an existing remark."
-              },
-              "response": []
-            }
-          ]
-        },
-        {
-          "name": "6.4 Collaborative Sticky Notes",
-          "item": [
-            {
-              "name": "1. Add Sticky Note to Document",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"color\": \"pink\",\n  \"note\": \"URGENT: Verify compliance with the legal team before final submission!\",\n  \"pageNumber\": 1\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/stickies",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "stickies"
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "2. List Stickies for Document",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/stickies?page=1&pageSize=10",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "stickies"
-                  ],
-                  "query": [
-                    {
-                      "key": "page",
-                      "value": "1"
-                    },
-                    {
-                      "key": "pageSize",
-                      "value": "10"
-                    },
-                    {
-                      "key": "pageNumber",
-                      "value": "1",
-                      "disabled": true
-                    }
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "3. Delete Sticky Note",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/stickies/{{stickyId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "stickies",
-                    "{{stickyId}}"
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "4. Approve / Review Sticky Note",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"status\": \"approve\",\n  \"rejectionReason\": \"\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/stickies/{{stickyId}}/approve",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "stickies",
-                    "{{stickyId}}",
-                    "approve"
-                  ]
-                },
-                "description": "Admin or authorized approver signs and approves/rejects a sticky note, recording their User ID, Name, and IP address."
-              },
-              "response": []
-            }
-          ]
-        },
-        {
-          "name": "6.5 Personal Virtual Sticky Notes (Private & Pinned)",
-          "item": [
-            {
-              "name": "1. Create Personal Virtual Sticky Note",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"detailSummary\": \"Check the revised financial annexure before Monday review\",\n  \"stickyColor\": \"pink\",\n  \"isPinned\": true\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/virtual-stickies?page=1&pageSize=10",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "virtual-stickies"
-                  ],
-                  "query": [
-                    {
-                      "key": "page",
-                      "value": "1"
-                    },
-                    {
-                      "key": "pageSize",
-                      "value": "10"
-                    },
-                    {
-                      "key": "isPinned",
-                      "value": "true",
-                      "disabled": true
-                    }
-                  ]
-                },
-                "description": "Creates a private virtual sticky note for the authenticated user on this document."
-              },
-              "response": []
-            },
-            {
-              "name": "2. List Personal Virtual Sticky Notes (Pinned First)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/virtual-stickies?page=1&pageSize=10",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "virtual-stickies"
-                  ],
-                  "query": [
-                    {
-                      "key": "page",
-                      "value": "1"
-                    },
-                    {
-                      "key": "pageSize",
-                      "value": "10"
-                    },
-                    {
-                      "key": "isPinned",
-                      "value": "true",
-                      "disabled": true
-                    }
-                  ]
-                },
-                "description": "Lists user's personal virtual sticky notes sorted with pinned notes first, then newest date."
-              },
-              "response": []
-            },
-            {
-              "name": "3. Update Personal Virtual Sticky Note",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"detailSummary\": \"Financial annexure verified with audit team\",\n  \"stickyColor\": \"green\",\n  \"isPinned\": false\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/virtual-stickies/{{virtualStickyId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "virtual-stickies",
-                    "{{virtualStickyId}}"
-                  ]
-                },
-                "description": "Updates personal virtual sticky note summary, color, or pinned status."
-              },
-              "response": []
-            },
-            {
-              "name": "4. Delete Personal Virtual Sticky Note",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/virtual-stickies/{{virtualStickyId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "virtual-stickies",
-                    "{{virtualStickyId}}"
-                  ]
-                },
-                "description": "Deletes the personal virtual sticky note."
-              },
-              "response": []
-            }
-          ]
-        },
-        {
-          "name": "6.6 Official Document Notings",
-          "item": [
-            {
-              "name": "1. Add Official Document Noting",
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "exec": [
-                      "if (pm.response.code === 201) {",
-                      "    var res = pm.response.json();",
-                      "    if (res.data && res.data.length > 0) {",
-                      "        pm.collectionVariables.set(\"notingId\", res.data[res.data.length - 1]._id);",
-                      "    }",
-                      "}"
-                    ],
-                    "type": "text/javascript"
-                  }
-                }
-              ],
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"text\": \"Note 1: Proposed budget allocation of $50,000 for Q2 infrastructure expansion.\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/notings",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "notings"
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "2. Approve Official Document Noting (Admin)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/notings/{{notingId}}/approve",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "notings",
-                    "{{notingId}}",
-                    "approve"
-                  ]
-                }
-              },
-              "response": []
-            }
-          ]
-        },
-        {
-          "name": "6.7 Digital Signatures (OTP & Approval Workflow)",
-          "item": [
-            {
-              "name": "1. Request Digital Signature (Send OTP to Email)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/signatures/request",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "signatures",
-                    "request"
-                  ]
-                },
-                "description": "Captures current IP address and Device (User-Agent), generates a 6-digit OTP, and emails it to user."
-              },
-              "response": []
-            },
-            {
-              "name": "2. Verify Signature OTP",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"otp\": \"123456\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/signatures/{{signatureId}}/verify-otp",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "signatures",
-                    "{{signatureId}}",
-                    "verify-otp"
-                  ]
-                },
-                "description": "Verifies the 6-digit OTP from email. Marks isVerified: true, sets signedAt timestamp."
-              },
-              "response": []
-            },
-            {
-              "name": "3. Admin Review: Approve Signature",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{adminToken}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"status\": \"approve\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/signatures/{{signatureId}}/review",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "signatures",
-                    "{{signatureId}}",
-                    "review"
-                  ]
-                },
-                "description": "Approving authority admin marks status as approve, recording approving authority admin id."
-              },
-              "response": []
-            },
-            {
-              "name": "4. Admin Review: Reject Signature",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{adminToken}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "PATCH",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"status\": \"reject\",\n  \"rejectionReason\": \"Signer authorization mismatch\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/signatures/{{signatureId}}/review",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "signatures",
-                    "{{signatureId}}",
-                    "review"
-                  ]
-                },
-                "description": "Admin rejects signature with reason."
-              },
-              "response": []
-            },
-            {
-              "name": "5. Get Document Signatures",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/signatures",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "signatures"
-                  ]
-                },
-                "description": "Lists all signatures for this document with user and approval authority details."
-              },
-              "response": []
-            }
-          ]
-        },
-        {
-          "name": "6.8 Permissions & Access Control (Pattern B)",
+          "name": "6.2 Permissions & Access Control (Pattern B)",
           "item": [
             {
               "name": "1. List Document Permissions (Paginated, Pattern B)",
@@ -2511,7 +1546,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"accessControl\": \"restricted\",\n  \"allowedUsers\": [\n    {\n      \"userId\": \"{{employeeUserId}}\",\n      \"permissions\": {\n        \"canView\": true,\n        \"canRemark\": true,\n        \"canSuggestChange\": true,\n        \"canDownload\": true\n      }\n    }\n  ]\n}"
+                  "raw": "{\n  \"accessControl\": \"restricted\", // Permitted: 'general' | 'department_only' | 'all_employees' | 'restricted'\n  \"allowedUsers\": [\n    {\n      \"userId\": \"{{employeeUserId}}\",\n      \"permissions\": {\n        \"canView\": true,\n        \"canRemark\": true,\n        \"canSuggestChange\": true,\n        \"canDownload\": true\n      }\n    }\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/api/documents/{{documentId}}/permissions",
@@ -2531,7 +1566,7 @@
           ]
         },
         {
-          "name": "6.9 Department Forwarding & Sharing",
+          "name": "6.3 Department Forwarding & Sharing",
           "item": [
             {
               "name": "1. Forward Document to Another Department",
@@ -2555,7 +1590,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"targetDepartmentId\": \"{{targetDeptId}}\",\n  \"priority\": \"urgent\",\n  \"accessControl\": \"restricted\",\n  \"remarks\": \"Please review track modernization sanction\"\n}"
+                  "raw": "{\n  \"targetDepartmentId\": \"{{targetDeptId}}\",\n  \"priority\": \"urgent\", // Permitted: 'routine' | 'urgent' | 'immediate'\n  \"accessControl\": \"restricted\", // Permitted: 'general' | 'department_only' | 'all_employees' | 'restricted'\n  \"remarks\": \"Please review track modernization sanction\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/api/documents/{{documentId}}/forward",
@@ -2594,7 +1629,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"accessControl\": \"general\",\n  \"priority\": \"routine\",\n  \"remarks\": \"Updated to general access for dept employees\"\n}"
+                  "raw": "{\n  \"accessControl\": \"general\", // Permitted: 'general' | 'department_only' | 'all_employees' | 'restricted'\n  \"priority\": \"routine\", // Permitted: 'routine' | 'urgent' | 'immediate'\n  \"remarks\": \"Updated to general access for dept employees\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/api/documents/{{documentId}}/forwarded-permissions/{{targetDeptId}}",
@@ -2615,7 +1650,177 @@
           ]
         },
         {
-          "name": "6.10 Replicas & Change Proposals",
+          "name": "6.4 Collaboration & Annotations",
+          "item": [
+            {
+              "name": "1. Add Remark from Accessor",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"comment\": \"Reviewed the file; the timeline in Section 3 looks achievable.\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/remarks",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "remarks"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "2. Add Virtual Sticky Note (Colorful)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"color\": \"pink\", // Permitted: 'yellow' | 'blue' | 'green' | 'pink' | 'purple' | 'orange'\n  \"note\": \"URGENT: Verify compliance with the legal team before final submission!\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/stickies",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "stickies"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "3. Add Official Document Noting",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "if (pm.response.code === 201) {",
+                      "    var res = pm.response.json();",
+                      "    if (res.data && res.data.length > 0) {",
+                      "        pm.collectionVariables.set(\"notingId\", res.data[res.data.length - 1]._id);",
+                      "    }",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"text\": \"Note 1: Proposed budget allocation of $50,000 for Q2 infrastructure expansion.\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/notings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "notings"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "4. Approve Official Document Noting (Admin)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "PATCH",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/notings/{{notingId}}/approve",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "notings",
+                    "{{notingId}}",
+                    "approve"
+                  ]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "6.5 Replicas & Change Proposals",
           "item": [
             {
               "name": "1. Create Replica / Suggest Changes (Employee)",
@@ -2746,7 +1951,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"status\": \"approved\",\n  \"reviewNotes\": \"Great suggestion. Approved for integration.\",\n  \"applyChangesToOriginal\": true\n}"
+                  "raw": "{\n  \"status\": \"approved\", // Permitted: 'approved' | 'rejected'\n  \"reviewNotes\": \"Great suggestion. Approved for integration.\",\n  \"applyChangesToOriginal\": true // Permitted: true | false\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/api/documents/replicas/{{replicaId}}/review",
@@ -2767,7 +1972,102 @@
           ]
         },
         {
-          "name": "6.11 Audit Trails & Activity Logs",
+          "name": "6.6 Deletion & Retention",
+          "item": [
+            {
+              "name": "1. Employee Self-Delete (Remove Access from My View)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/my-access",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "my-access"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "2. Department Delete (Dept Admin)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/department",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "department"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "3. Permanent Delete (Super Admin Strictly)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/permanent",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "{{documentId}}",
+                    "permanent"
+                  ]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "6.7 Audit Trails & Activity Logs",
           "item": [
             {
               "name": "1. List All Document Logs (Global Audit Trail - Super Admin)",
@@ -2959,107 +2259,89 @@
               "response": []
             }
           ]
-        },
-        {
-          "name": "6.12 Deletion & Retention",
-          "item": [
-            {
-              "name": "1. Employee Self-Delete (Remove Access from My View)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/my-access",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "my-access"
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "2. Department Delete (Dept Admin)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/department",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "department"
-                  ]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "3. Permanent Delete (Super Admin Strictly)",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{token}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "DELETE",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/documents/{{documentId}}/permanent",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "documents",
-                    "{{documentId}}",
-                    "permanent"
-                  ]
-                }
-              },
-              "response": []
-            }
-          ]
         }
       ]
     },
     {
-      "name": "7. Mail Service",
+      "name": "7. General Files & Mail",
       "item": [
+        {
+          "name": "Upload General File",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "description": "Select a file from your computer"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "files",
+                "upload"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List General Files (Paginated)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/files?page=1&pageSize=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
         {
           "name": "Send Direct Email",
           "request": {
@@ -3093,6 +2375,372 @@
                 "api",
                 "mail",
                 "send"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "8. Administrative Notifications & Broadcast Desk",
+      "item": [
+        {
+          "name": "1. Get Notification & Broadcast Counts (Super Admin Only)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/counts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "counts"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. List Notifications (Admin Desk - Super Admin Only)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications?page=1&pageSize=10&status=active",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                },
+                {
+                  "key": "status",
+                  "value": "active"
+                },
+                {
+                  "key": "broadcast",
+                  "value": "global",
+                  "disabled": true
+                },
+                {
+                  "key": "classification",
+                  "value": "Security & Compliance",
+                  "disabled": true
+                },
+                {
+                  "key": "priority",
+                  "value": "urgent",
+                  "disabled": true
+                },
+                {
+                  "key": "isRead",
+                  "value": "false",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. My Notifications Feed (Global & Targeted to User - All Users)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/my?page=1&pageSize=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "my"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                },
+                {
+                  "key": "isRead",
+                  "value": "false",
+                  "disabled": true
+                },
+                {
+                  "key": "priority",
+                  "value": "urgent",
+                  "disabled": true
+                },
+                {
+                  "key": "classification",
+                  "value": "Security & Compliance",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Create Notification / Broadcast / Reminder",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data._id) {",
+                  "    pm.collectionVariables.set('notificationId', res.data._id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Security Audit Compliance Reminder\",\n  \"message\": \"Please verify two-factor authentication or sign required document before deadline.\",\n  \"classification\": \"Security & Compliance\", // Permitted: 'System Notice' | 'Workflow Directive' | 'Security & Compliance' | 'Official Reminder'\n  \"priority\": \"urgent\", // Permitted: 'routine' | 'urgent' | 'immediate'\n  \"broadcast\": \"specific_user\", // Permitted: 'self' | 'global' | 'specific_user' (Only Super Admin can create 'global' or 'specific_user'; other roles create 'self')\n  \"employeeId\": \"EMP-1001\", // Specific user targeting: pass single employeeId (e.g. EMP-1001) or targetUser/userId\n  \"notifyDate\": \"2026-11-21T18:00:00.000Z\",\n  \"fileReferenceNumber\": \"MOR/CIVIL/2026/F-114\" // Replaces fileReferenceId with official File Number (Optional, e.g. MOR/CIVIL/2026/F-001)\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "4. Get Notification By ID",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/{{notificationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "{{notificationId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. Mark Notification As Read",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/{{notificationId}}/read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "{{notificationId}}",
+                "read"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "6. Mark All Notifications As Read",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/mark-all-read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "mark-all-read"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "7. Update Notification",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Updated Security Audit Compliance Reminder\",\n  \"classification\": \"Security & Compliance\", // Permitted: 'System Notice' | 'Workflow Directive' | 'Security & Compliance' | 'Official Reminder'\n  \"priority\": \"immediate\", // Permitted: 'routine' | 'urgent' | 'immediate'\n  \"status\": \"active\" // Permitted: 'active' | 'dismissed' | 'archived'\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/{{notificationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "{{notificationId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "8. Delete Notification",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/{{notificationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "{{notificationId}}"
               ]
             }
           },

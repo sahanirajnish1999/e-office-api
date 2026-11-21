@@ -341,28 +341,34 @@ export const searchAndListDocuments = async (req, res, next) => {
     const userDeptId = req.user.departmentId;
 
     if (req.user.role === 'super_admin') {
-      if (departmentId) {
+      if (departmentId && isValidObjectId(departmentId)) {
+        query.departmentId = new mongoose.Types.ObjectId(departmentId);
+      } else if (departmentId) {
         query.departmentId = departmentId;
       }
     } else if (req.user.role === 'department_admin') {
+      const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
       const forwardedDocIds = await DocumentForward.distinct('documentId', {
-        targetDepartmentId: userDeptId,
+        targetDepartmentId: targetDeptObjId,
         isDeletedForDept: false,
       });
 
       query.$or = [
-        { departmentId: userDeptId, isDeletedForOriginDept: false },
+        { departmentId: targetDeptObjId, isDeletedForOriginDept: false },
         { _id: { $in: forwardedDocIds } },
       ];
     } else {
       // Employee scoping
+      const userObjId = isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+      const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+
       const userPermittedDocIds = await DocumentPermission.distinct('documentId', {
-        userId,
+        userId: userObjId,
       });
 
       // Check forwarded files accessible to employee
       const fwdFilter = {
-        targetDepartmentId: userDeptId,
+        targetDepartmentId: targetDeptObjId,
         isDeletedForDept: false,
       };
       if (!req.user.isAuthorizedOfficer) {
@@ -379,7 +385,7 @@ export const searchAndListDocuments = async (req, res, next) => {
 
       query.$or = [
         {
-          departmentId: userDeptId,
+          departmentId: targetDeptObjId,
           isDeletedForOriginDept: false,
           accessControl: { $in: originDeptAccessList },
         },
@@ -391,12 +397,17 @@ export const searchAndListDocuments = async (req, res, next) => {
     // 3. Search text / title / subject / fileNumber
     if (search || subject) {
       const searchTerm = search || subject;
-      query.$or = query.$or || [];
-      query.$or.push(
+      const searchConditions = [
         { title: { $regex: searchTerm, $options: 'i' } },
         { subject: { $regex: searchTerm, $options: 'i' } },
-        { fileNumber: { $regex: searchTerm, $options: 'i' } }
-      );
+        { fileNumber: { $regex: searchTerm, $options: 'i' } },
+      ];
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: searchConditions }];
+        delete query.$or;
+      } else {
+        query.$or = searchConditions;
+      }
     }
 
     if (fileNumber) {
@@ -413,8 +424,9 @@ export const searchAndListDocuments = async (req, res, next) => {
 
     // 4. Accessor filter (Find files permitted to a specific user)
     if (accessorId) {
+      const accessorObjId = isValidObjectId(accessorId) ? new mongoose.Types.ObjectId(accessorId) : accessorId;
       const accessorPermittedDocIds = await DocumentPermission.distinct('documentId', {
-        userId: accessorId,
+        userId: accessorObjId,
       });
       query._id = { $in: accessorPermittedDocIds };
     }
@@ -437,15 +449,58 @@ export const searchAndListDocuments = async (req, res, next) => {
     // 8. Pagination
     const { page, pageSize, skip } = getPaginationParams(req.query);
 
-    const [total, documents] = await Promise.all([
-      Document.countDocuments(query),
-      Document.find(query)
-        .populate('departmentId', 'name code')
-        .populate('createdBy', 'name email')
-        .sort(sortOptions)
-        .skip(skip)
-        .limit(pageSize),
+    // Optimized Single-Roundtrip Aggregation Pipeline with $facet & $lookup
+    const [result] = await Document.aggregate([
+      { $match: query },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: sortOptions },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'departments',
+                localField: 'departmentId',
+                foreignField: '_id',
+                as: 'departmentId',
+                pipeline: [{ $project: { _id: 1, name: 1, code: 1 } }],
+              },
+            },
+            { $unwind: { path: '$departmentId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'createdBy',
+                foreignField: '_id',
+                as: 'createdBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$createdBy', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+                fileTitle: '$title',
+                fileSubject: '$subject',
+                filePriority: '$priority',
+                fileDate: '$registrationDate',
+                targetAudience: '$accessControl',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const documents = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({
@@ -465,9 +520,269 @@ export const searchAndListDocuments = async (req, res, next) => {
  */
 export const getDocumentById = async (req, res, next) => {
   try {
-    const document = await Document.findById(req.params.id)
-      .populate('departmentId', 'name code description')
-      .populate('createdBy', 'name email');
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid document ID format',
+      });
+    }
+
+    const currentUserId = req.user.id || req.user._id;
+
+    // Single-roundtrip aggregation pipeline: replaces 15 separate queries with 1 database operation
+    const [document] = await Document.aggregate([
+      {
+        $match: { _id: new mongoose.Types.ObjectId(id) },
+      },
+
+      // 1. Join Department
+      {
+        $lookup: {
+          from: 'departments',
+          localField: 'departmentId',
+          foreignField: '_id',
+          as: 'departmentId',
+          pipeline: [{ $project: { _id: 1, name: 1, code: 1, description: 1 } }],
+        },
+      },
+      { $unwind: { path: '$departmentId', preserveNullAndEmptyArrays: true } },
+
+      // 2. Join CreatedBy User
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'createdBy',
+          foreignField: '_id',
+          as: 'createdBy',
+          pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+        },
+      },
+      { $unwind: { path: '$createdBy', preserveNullAndEmptyArrays: true } },
+
+      // 3. Join Forwarded Departments
+      {
+        $lookup: {
+          from: 'documentforwards',
+          let: { docId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$documentId', '$$docId'] },
+                    { $eq: ['$isDeletedForDept', false] },
+                  ],
+                },
+              },
+            },
+            {
+              $lookup: {
+                from: 'departments',
+                localField: 'targetDepartmentId',
+                foreignField: '_id',
+                as: 'targetDepartmentId',
+                pipeline: [{ $project: { _id: 1, name: 1, code: 1 } }],
+              },
+            },
+            { $unwind: { path: '$targetDepartmentId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'departments',
+                localField: 'fromDepartmentId',
+                foreignField: '_id',
+                as: 'fromDepartmentId',
+                pipeline: [{ $project: { _id: 1, name: 1, code: 1 } }],
+              },
+            },
+            { $unwind: { path: '$fromDepartmentId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'forwardedBy',
+                foreignField: '_id',
+                as: 'forwardedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$forwardedBy', preserveNullAndEmptyArrays: true } },
+          ],
+          as: 'forwardedDepartments',
+        },
+      },
+
+      // 4. Join Collaborative Sticky Notes
+      {
+        $lookup: {
+          from: 'documentstickies',
+          let: { docId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$documentId', '$$docId'] } } },
+            { $sort: { createdAt: -1 } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'userId',
+                foreignField: '_id',
+                as: 'userId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, role: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'createdBy',
+                foreignField: '_id',
+                as: 'createdBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$createdBy', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'approvedBy',
+                foreignField: '_id',
+                as: 'approvedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, role: 1 } }],
+              },
+            },
+            { $unwind: { path: '$approvedBy', preserveNullAndEmptyArrays: true } },
+          ],
+          as: 'stickies',
+        },
+      },
+
+      // 5. Join Digital Signatures
+      {
+        $lookup: {
+          from: 'documentsignatures',
+          let: { docId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$documentId', '$$docId'] } } },
+            { $sort: { createdAt: -1 } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'userId',
+                foreignField: '_id',
+                as: 'userId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, designation: 1, employeeId: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'approvedBy',
+                foreignField: '_id',
+                as: 'approvedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, designation: 1 } }],
+              },
+            },
+            { $unwind: { path: '$approvedBy', preserveNullAndEmptyArrays: true } },
+          ],
+          as: 'signatures',
+        },
+      },
+
+      // 6. Join Document Remarks
+      {
+        $lookup: {
+          from: 'documentremarks',
+          let: { docId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$documentId', '$$docId'] } } },
+            { $sort: { createdAt: -1 } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'userId',
+                foreignField: '_id',
+                as: 'userId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, designation: 1, employeeId: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
+          ],
+          as: 'remarks',
+        },
+      },
+
+      // 7. Join Attached Files
+      {
+        $lookup: {
+          from: 'documentfiles',
+          let: { docId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$documentId', '$$docId'] } } },
+            { $sort: { pageNumber: 1, createdAt: -1 } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'uploadUserId',
+                foreignField: '_id',
+                as: 'uploadUserId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, designation: 1, employeeId: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$uploadUserId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'approvedBy',
+                foreignField: '_id',
+                as: 'approvedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, designation: 1 } }],
+              },
+            },
+            { $unwind: { path: '$approvedBy', preserveNullAndEmptyArrays: true } },
+          ],
+          as: 'files',
+        },
+      },
+
+      // 8. Join Personal Virtual Stickies for Requesting User (Pinned first, then latest date)
+      {
+        $lookup: {
+          from: 'virtualstickynotes',
+          let: { docId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$documentId', '$$docId'] },
+                    { $eq: ['$userId', new mongoose.Types.ObjectId(currentUserId)] },
+                  ],
+                },
+              },
+            },
+            { $sort: { isPinned: -1, createdAt: -1 } },
+          ],
+          as: 'userVirtualStickies',
+        },
+      },
+
+      // 9. Add Virtual Aliases & clean ID for full backward compatibility
+      {
+        $addFields: {
+          id: '$_id',
+          fileTitle: '$title',
+          fileSubject: '$subject',
+          filePriority: '$priority',
+          fileDate: '$registrationDate',
+          targetAudience: '$accessControl',
+        },
+      },
+      {
+        $project: {
+          __v: 0,
+        },
+      },
+    ]);
 
     if (!document) {
       return res.status(404).json({
@@ -476,44 +791,10 @@ export const getDocumentById = async (req, res, next) => {
       });
     }
 
-    const currentUserId = req.user.id || req.user._id;
-
-    const [forwards, stickies, signatures, remarks, files, userVirtualStickies] = await Promise.all([
-      DocumentForward.find({
-        documentId: document._id,
-        isDeletedForDept: false,
-      })
-        .populate('targetDepartmentId', 'name code')
-        .populate('fromDepartmentId', 'name code')
-        .populate('forwardedBy', 'name email'),
-      DocumentSticky.find({ documentId: document._id }).sort({ createdAt: -1 }),
-      DocumentSignature.find({ documentId: document._id })
-        .populate('userId', 'name email designation employeeId departmentId')
-        .populate('approvedBy', 'name email designation')
-        .sort({ createdAt: -1 }),
-      DocumentRemark.find({ documentId: document._id })
-        .populate('userId', 'name email designation employeeId departmentId')
-        .sort({ createdAt: -1 }),
-      DocumentFile.find({ documentId: document._id })
-        .populate('uploadUserId', 'name email designation employeeId departmentId')
-        .populate('approvedBy', 'name email designation')
-        .sort({ pageNumber: 1, createdAt: -1 }),
-      VirtualStickyNote.find({ documentId: document._id, userId: currentUserId })
-        .sort({ isPinned: -1, createdAt: -1 }),
-    ]);
-
     res.status(200).json({
       success: true,
       userPermission: req.userPermission,
-      data: {
-        ...document.toObject(),
-        files,
-        remarks,
-        signatures,
-        stickies,
-        userVirtualStickies,
-        forwardedDepartments: forwards,
-      },
+      data: document,
     });
   } catch (error) {
     next(error);
@@ -597,17 +878,55 @@ export const listDocumentPermissions = async (req, res, next) => {
     const { id } = req.params;
     const { page, pageSize, skip } = getPaginationParams(req.query);
 
-    const filter = { documentId: id };
+    const matchDocId = isValidObjectId(id) ? new mongoose.Types.ObjectId(id) : id;
 
-    const [total, permissions] = await Promise.all([
-      DocumentPermission.countDocuments(filter),
-      DocumentPermission.find(filter)
-        .populate('userId', 'name email role departmentId')
-        .populate('grantedBy', 'name email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await DocumentPermission.aggregate([
+      { $match: { documentId: matchDocId } },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'userId',
+                foreignField: '_id',
+                as: 'userId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, role: 1, departmentId: 1 } }],
+              },
+            },
+            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'grantedBy',
+                foreignField: '_id',
+                as: 'grantedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }],
+              },
+            },
+            { $unwind: { path: '$grantedBy', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const permissions = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({

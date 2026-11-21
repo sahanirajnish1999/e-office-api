@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { User } from '../models/user.model.js';
 import { Department } from '../models/department.model.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
@@ -143,22 +144,61 @@ export const listEmployees = async (req, res, next) => {
 
     // If department admin, scope search strictly to their department
     if (req.user.role === 'department_admin') {
-      filter.departmentId = req.user.departmentId;
+      filter.departmentId = isValidObjectId(req.user.departmentId)
+        ? new mongoose.Types.ObjectId(req.user.departmentId)
+        : req.user.departmentId;
     } else if (req.query.departmentId) {
       // Super admin can filter by department if provided in query
-      filter.departmentId = req.query.departmentId;
+      filter.departmentId = isValidObjectId(req.query.departmentId)
+        ? new mongoose.Types.ObjectId(req.query.departmentId)
+        : req.query.departmentId;
     }
 
     const { page, pageSize, skip } = getPaginationParams(req.query);
 
-    const [total, employees] = await Promise.all([
-      User.countDocuments(filter),
-      User.find(filter)
-        .populate('departmentId', 'name code')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await User.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'departments',
+                localField: 'departmentId',
+                foreignField: '_id',
+                as: 'departmentId',
+                pipeline: [{ $project: { _id: 1, name: 1, code: 1 } }],
+              },
+            },
+            { $unwind: { path: '$departmentId', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+                joinedDate: '$createdAt',
+                lastActiveTime: '$lastActiveAt',
+              },
+            },
+            {
+              $project: {
+                password: 0,
+                passwordResetToken: 0,
+                passwordResetExpires: 0,
+                __v: 0,
+                createdAt: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const employees = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({

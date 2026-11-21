@@ -10,7 +10,19 @@ const app = express();
 // HTTP request logger
 app.use(morgan('dev'));
 
-// Body parsers
+// Body parsers: includes comment-safe JSON parsing for Postman inline comments
+app.use(express.text({ type: ['application/json', 'text/plain'] }));
+app.use((req, res, next) => {
+  if (typeof req.body === 'string' && req.body.trim()) {
+    try {
+      const stripped = req.body.replace(/\/\*[\s\S]*?\*\/|([^:]|^)\/\/.*$/gm, '$1');
+      req.body = stripped.trim() ? JSON.parse(stripped) : {};
+    } catch (err) {
+      return next(err);
+    }
+  }
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

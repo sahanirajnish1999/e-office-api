@@ -115,15 +115,53 @@ export const getDocumentFiles = async (req, res, next) => {
       }
     }
 
-    const [total, files] = await Promise.all([
-      DocumentFile.countDocuments(filter),
-      DocumentFile.find(filter)
-        .populate('uploadUserId', 'name email role department')
-        .populate('approvedBy', 'name email role')
-        .sort({ pageNumber: 1, createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize),
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await DocumentFile.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { pageNumber: 1, createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'uploadUserId',
+                foreignField: '_id',
+                as: 'uploadUserId',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, role: 1, department: 1 } }],
+              },
+            },
+            { $unwind: { path: '$uploadUserId', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'approvedBy',
+                foreignField: '_id',
+                as: 'approvedBy',
+                pipeline: [{ $project: { _id: 1, name: 1, email: 1, role: 1 } }],
+              },
+            },
+            { $unwind: { path: '$approvedBy', preserveNullAndEmptyArrays: true } },
+            {
+              $addFields: {
+                id: '$_id',
+              },
+            },
+            {
+              $project: {
+                __v: 0,
+              },
+            },
+          ],
+        },
+      },
     ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const files = result?.paginatedData || [];
 
     res.status(200).json(
       formatPaginatedResponse({
@@ -309,6 +347,44 @@ export const deleteDocumentFile = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: 'Document file deleted successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Super Admin: Get total, approved, pending, and rejected document file counts
+ * GET /api/documents/files/counts
+ */
+export const getDocumentFileCounts = async (req, res, next) => {
+  try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin has permission to view document file counts',
+      });
+    }
+
+    const [result] = await DocumentFile.aggregate([
+      {
+        $facet: {
+          totalFiles:    [{ $count: 'count' }],
+          approvedFiles: [{ $match: { status: 'approve'  } }, { $count: 'count' }],
+          pendingFiles:  [{ $match: { status: 'pending'  } }, { $count: 'count' }],
+          rejectedFiles: [{ $match: { status: 'reject'   } }, { $count: 'count' }],
+        },
+      },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalFiles:    result?.totalFiles?.[0]?.count    ?? 0,
+        approvedFiles: result?.approvedFiles?.[0]?.count ?? 0,
+        pendingFiles:  result?.pendingFiles?.[0]?.count  ?? 0,
+        rejectedFiles: result?.rejectedFiles?.[0]?.count ?? 0,
+      },
     });
   } catch (error) {
     next(error);

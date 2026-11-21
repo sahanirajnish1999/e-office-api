@@ -294,22 +294,45 @@ export const deptAdminUpdatePermissions = async (req, res, next) => {
  */
 export const getUserCounts = async (req, res, next) => {
   try {
-    const [
-      totalUsers,
-      totalEmployees,
-      totalAuthorizedOfficers,
-      totalAdminsExcludingHim,
-      totalDepartments,
-    ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ role: 'employee' }),
-      User.countDocuments({ isAuthorizedOfficer: true }),
-      User.countDocuments({
-        _id: { $ne: req.user.id },
-        role: { $in: ['super_admin', 'department_admin'] },
-      }),
+    const currentUserId = req.user?.id || req.user?._id;
+    const currentAdminId = currentUserId && isValidObjectId(currentUserId)
+      ? new mongoose.Types.ObjectId(currentUserId)
+      : currentUserId;
+
+    // Single-roundtrip aggregation pipeline with $facet: consolidates 4 user count queries into 1
+    const [userCountsResult, totalDepartments] = await Promise.all([
+      User.aggregate([
+        {
+          $facet: {
+            totalUsers: [{ $count: 'count' }],
+            totalEmployees: [
+              { $match: { role: 'employee' } },
+              { $count: 'count' },
+            ],
+            totalAuthorizedOfficers: [
+              { $match: { isAuthorizedOfficer: true } },
+              { $count: 'count' },
+            ],
+            totalAdminsExcludingHim: [
+              {
+                $match: {
+                  _id: { $ne: currentAdminId },
+                  role: { $in: ['super_admin', 'department_admin'] },
+                },
+              },
+              { $count: 'count' },
+            ],
+          },
+        },
+      ]),
       Department.countDocuments(),
     ]);
+
+    const stats = userCountsResult?.[0] || {};
+    const totalUsers = stats.totalUsers?.[0]?.count || 0;
+    const totalEmployees = stats.totalEmployees?.[0]?.count || 0;
+    const totalAuthorizedOfficers = stats.totalAuthorizedOfficers?.[0]?.count || 0;
+    const totalAdminsExcludingHim = stats.totalAdminsExcludingHim?.[0]?.count || 0;
 
     res.status(200).json({
       success: true,

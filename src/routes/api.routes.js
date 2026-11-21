@@ -8,6 +8,7 @@ import documentRoutes from './document.routes.js';
 import mailRoutes from './mail.routes.js';
 import documentStickyRoutes from './document.sticky.routes.js';
 import virtualStickyRoutes from './virtual.sticky.routes.js';
+import notificationRoutes from './notification.routes.js';
 
 const router = Router();
 
@@ -19,6 +20,7 @@ router.use('/email-requests', emailRequestRoutes);
 router.use('/documents', documentRoutes);
 router.use('/stickies', documentStickyRoutes);
 router.use('/virtual-stickies', virtualStickyRoutes);
+router.use('/notifications', notificationRoutes);
 router.use('/mail', mailRoutes);
 
 export default router;

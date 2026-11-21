@@ -17,7 +17,7 @@ import { DocumentFile } from '../src/models/document.file.model.js';
 import { VirtualStickyNote } from '../src/models/virtual.sticky.model.js';
 import { createSticky, getStickiesByDocument, approveSticky } from '../src/controllers/document.sticky.controller.js';
 import { getRemarksByDocument } from '../src/controllers/document.remark.controller.js';
-import { uploadDocumentFile, getDocumentFiles, reviewDocumentFile, deleteDocumentFile } from '../src/controllers/document.file.controller.js';
+import { uploadDocumentFile, getDocumentFiles, reviewDocumentFile, deleteDocumentFile, getDocumentFileCounts } from '../src/controllers/document.file.controller.js';
 import { createVirtualSticky, getVirtualStickies, updateVirtualSticky, deleteVirtualSticky } from '../src/controllers/virtual.sticky.controller.js';
 import { getPaginationParams, formatPaginatedResponse } from '../src/utils/pagination.util.js';
 import { checkPermission } from '../src/middlewares/permission.middleware.js';
@@ -25,9 +25,24 @@ import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mai
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime } from '../src/controllers/user.controller.js';
-import { getAllDocumentLogs } from '../src/controllers/document.controller.js';
-import { generateNextEmployeeId, createEmployee } from '../src/controllers/employee.controller.js';
+import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions } from '../src/controllers/document.controller.js';
+import { generateNextEmployeeId, createEmployee, listEmployees } from '../src/controllers/employee.controller.js';
+import { listReplicas } from '../src/controllers/document.replica.controller.js';
+import { getMyRequests, listAllRequests } from '../src/controllers/email.request.controller.js';
 import { createDepartmentAdmin } from '../src/controllers/user.controller.js';
+import { Notification } from '../src/models/notification.model.js';
+import { NotificationRead } from '../src/models/notification.read.model.js';
+import {
+  getMyNotifications,
+  getNotificationCounts,
+  listNotifications,
+  createNotification,
+  getNotificationById,
+  markAsRead,
+  markAllAsRead,
+  updateNotification,
+  deleteNotification,
+} from '../src/controllers/notification.controller.js';
 import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone, isValidObjectId } from '../src/utils/validator.util.js';
 import { generateNextFileNumber } from '../src/utils/document.util.js';
 
@@ -881,6 +896,50 @@ describe('Project Tests', () => {
     assert.strictEqual(typeof getDocumentFiles, 'function');
     assert.strictEqual(typeof reviewDocumentFile, 'function');
     assert.strictEqual(typeof deleteDocumentFile, 'function');
+    assert.strictEqual(typeof getDocumentFileCounts, 'function');
+  });
+
+  it('should verify getDocumentFileCounts uses $facet aggregation and is restricted to Super Admin', async () => {
+    const originalAggregate = DocumentFile.aggregate;
+    let capturedPipeline = null;
+
+    DocumentFile.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [{ totalFiles: [{ count: 150 }], approvedFiles: [{ count: 80 }], pendingFiles: [{ count: 60 }], rejectedFiles: [{ count: 10 }] }];
+    };
+
+    let responseData = null;
+    let statusCode = null;
+    const req = { user: { id: 'admin-id', role: 'super_admin' } };
+    const res = { status(c) { statusCode = c; return this; }, json(d) { responseData = d; return this; } };
+
+    await getDocumentFileCounts(req, res, () => {});
+    DocumentFile.aggregate = originalAggregate;
+
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage, '$facet stage must exist in pipeline');
+    assert.ok(facetStage.$facet.totalFiles,    'totalFiles bucket must exist');
+    assert.ok(facetStage.$facet.approvedFiles, 'approvedFiles bucket must exist');
+    assert.ok(facetStage.$facet.pendingFiles,  'pendingFiles bucket must exist');
+    assert.ok(facetStage.$facet.rejectedFiles, 'rejectedFiles bucket must exist');
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.totalFiles,    150);
+    assert.strictEqual(responseData.data.approvedFiles,  80);
+    assert.strictEqual(responseData.data.pendingFiles,   60);
+    assert.strictEqual(responseData.data.rejectedFiles,  10);
+  });
+
+  it('should return 403 for non-super_admin on getDocumentFileCounts', async () => {
+    let statusCode = null;
+    let responseData = null;
+    const req = { user: { id: 'emp-id', role: 'employee' } };
+    const res = { status(c) { statusCode = c; return this; }, json(d) { responseData = d; return this; } };
+
+    await getDocumentFileCounts(req, res, () => {});
+
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
   });
 
   it('should validate VirtualStickyNote model schema definition, paths, and defaults', () => {
@@ -1163,5 +1222,965 @@ describe('Project Tests', () => {
     assert.strictEqual(mockSticky.isApproved, true);
     assert.strictEqual(mockSticky.approvedBy, '650c1f1e1f1e1f1e1f1e3333');
     assert.strictEqual(mockSticky.approvalIpAddress, '203.0.113.195');
+  });
+
+  it('should verify getDocumentById uses aggregation pipeline with all lookups and returns identical structure', async () => {
+    const originalAggregate = Document.aggregate;
+    let capturedPipeline = null;
+
+    const mockDocId = '650c1f1e1f1e1f1e1f1e1f1e';
+    const mockAggResult = {
+      _id: mockDocId,
+      id: mockDocId,
+      fileNumber: 'MOR/CIVIL/2026/F-001',
+      title: 'Quarterly Infrastructure Review',
+      subject: 'Review of projects and budgets',
+      priority: 'routine',
+      accessControl: 'general',
+      registrationDate: new Date('2026-11-20T10:00:00Z'),
+      departmentId: { _id: '650c1f1e1f1e1f1e1f1e5555', name: 'Civil Engineering', code: 'CIVIL' },
+      createdBy: { _id: '650c1f1e1f1e1f1e1f1e1111', name: 'Admin Officer', email: 'admin@example.com' },
+      files: [],
+      remarks: [],
+      signatures: [],
+      stickies: [],
+      userVirtualStickies: [],
+      forwardedDepartments: [],
+      fileTitle: 'Quarterly Infrastructure Review',
+      fileSubject: 'Review of projects and budgets',
+      filePriority: 'routine',
+      fileDate: new Date('2026-11-20T10:00:00Z'),
+      targetAudience: 'general',
+    };
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [mockAggResult];
+    };
+
+    const req = {
+      params: { id: mockDocId },
+      user: { id: '650c1f1e1f1e1f1e1f1e1111' },
+      userPermission: { canView: true, canRemark: true },
+    };
+
+    let statusCode = null;
+    let responseData = null;
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    await getDocumentById(req, res, () => {});
+    Document.aggregate = originalAggregate;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.ok(responseData.userPermission);
+    assert.strictEqual(responseData.userPermission.canView, true);
+
+    const doc = responseData.data;
+    assert.strictEqual(doc.id, mockDocId);
+    assert.strictEqual(doc.fileNumber, 'MOR/CIVIL/2026/F-001');
+    assert.strictEqual(doc.fileTitle, 'Quarterly Infrastructure Review');
+    assert.strictEqual(doc.fileSubject, 'Review of projects and budgets');
+    assert.strictEqual(doc.targetAudience, 'general');
+    assert.ok(Array.isArray(doc.files));
+    assert.ok(Array.isArray(doc.remarks));
+    assert.ok(Array.isArray(doc.signatures));
+    assert.ok(Array.isArray(doc.stickies));
+    assert.ok(Array.isArray(doc.userVirtualStickies));
+    assert.ok(Array.isArray(doc.forwardedDepartments));
+
+    // Verify pipeline stages
+    assert.ok(capturedPipeline);
+    const matchStage = capturedPipeline.find((s) => s.$match);
+    assert.ok(matchStage);
+
+    const lookupStages = capturedPipeline.filter((s) => s.$lookup).map((s) => s.$lookup.from);
+    assert.ok(lookupStages.includes('departments'));
+    assert.ok(lookupStages.includes('users'));
+    assert.ok(lookupStages.includes('documentforwards'));
+    assert.ok(lookupStages.includes('documentstickies'));
+    assert.ok(lookupStages.includes('documentsignatures'));
+    assert.ok(lookupStages.includes('documentremarks'));
+    assert.ok(lookupStages.includes('documentfiles'));
+    assert.ok(lookupStages.includes('virtualstickynotes'));
+  });
+
+  it('should verify searchAndListDocuments uses single-roundtrip aggregation pipeline with $facet', async () => {
+    const originalAggregate = Document.aggregate;
+    let capturedPipeline = null;
+
+    const mockDoc = {
+      _id: '650c1f1e1f1e1f1e1f1e1f1e',
+      id: '650c1f1e1f1e1f1e1f1e1f1e',
+      fileNumber: 'MOR/CIVIL/2026/F-001',
+      title: 'Road Construction',
+      subject: 'Highway widening',
+      priority: 'urgent',
+      accessControl: 'department_only',
+      fileTitle: 'Road Construction',
+      fileSubject: 'Highway widening',
+      filePriority: 'urgent',
+      targetAudience: 'department_only',
+      departmentId: { _id: '650c1f1e1f1e1f1e1f1e1001', name: 'Civil', code: 'CIVIL' },
+      createdBy: { _id: '650c1f1e1f1e1f1e1f1e1002', name: 'Engineer', email: 'eng@gov.in' },
+    };
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [mockDoc],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      query: { page: '1', pageSize: '10', search: 'Road' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1002', role: 'super_admin' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await searchAndListDocuments(req, res, () => {});
+    Document.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage, 'Pipeline must include a $facet stage');
+    assert.ok(facetStage.$facet.totalCount, 'Facet must compute totalCount');
+    assert.ok(facetStage.$facet.paginatedData, 'Facet must compute paginatedData');
+
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+    assert.strictEqual(responseData.page, 1);
+    assert.strictEqual(responseData.data.length, 1);
+    assert.strictEqual(responseData.data[0].fileTitle, 'Road Construction');
+  });
+
+  it('should verify getUserCounts uses $facet aggregation pipeline on User', async () => {
+    const originalAggregate = User.aggregate;
+    const originalDeptCount = Department.countDocuments;
+    let capturedPipeline = null;
+
+    User.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalUsers: [{ count: 15 }],
+          totalEmployees: [{ count: 10 }],
+          totalAuthorizedOfficers: [{ count: 3 }],
+          totalAdminsExcludingHim: [{ count: 2 }],
+        },
+      ];
+    };
+    Department.countDocuments = async () => 5;
+
+    let responseData = null;
+    const req = { user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' } };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await getUserCounts(req, res, () => {});
+    User.aggregate = originalAggregate;
+    Department.countDocuments = originalDeptCount;
+
+    assert.ok(capturedPipeline);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage);
+    assert.ok(facetStage.$facet.totalUsers);
+    assert.ok(facetStage.$facet.totalEmployees);
+    assert.ok(facetStage.$facet.totalAuthorizedOfficers);
+    assert.ok(facetStage.$facet.totalAdminsExcludingHim);
+
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.totalUsers, 15);
+    assert.strictEqual(responseData.data.totalEmployees, 10);
+    assert.strictEqual(responseData.data.totalAuthorizedOfficers, 3);
+    assert.strictEqual(responseData.data.totalAdminsExcludingHim, 2);
+    assert.strictEqual(responseData.data.totalDepartments, 5);
+  });
+
+  it('should verify listDocumentPermissions uses $facet aggregation pipeline', async () => {
+    const originalAggregate = DocumentPermission.aggregate;
+    let capturedPipeline = null;
+
+    DocumentPermission.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            {
+              _id: '650c1f1e1f1e1f1e1f1e1010',
+              id: '650c1f1e1f1e1f1e1f1e1010',
+              userId: { name: 'Officer', email: 'officer@gov.in' },
+            },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      params: { id: '650c1f1e1f1e1f1e1f1e1000' },
+      query: { page: '1', pageSize: '10' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await listDocumentPermissions(req, res, () => {});
+    DocumentPermission.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+  });
+
+  it('should verify getDocumentFiles uses $facet aggregation pipeline', async () => {
+    const originalFindById = Document.findById;
+    const originalAggregate = DocumentFile.aggregate;
+    let capturedPipeline = null;
+
+    Document.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e1000' });
+    DocumentFile.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 2 }],
+          paginatedData: [
+            { _id: '650c1f1e1f1e1f1e1f1e1020', id: '650c1f1e1f1e1f1e1f1e1020', pageNumber: 1 },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      params: { id: '650c1f1e1f1e1f1e1f1e1000' },
+      query: { page: '1', pageSize: '10' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await getDocumentFiles(req, res, () => {});
+    Document.findById = originalFindById;
+    DocumentFile.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    assert.ok(capturedPipeline.find((s) => s.$facet));
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 2);
+  });
+
+  it('should verify getRemarksByDocument uses $facet aggregation pipeline', async () => {
+    const originalAggregate = DocumentRemark.aggregate;
+    let capturedPipeline = null;
+
+    DocumentRemark.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            { _id: '650c1f1e1f1e1f1e1f1e1030', id: '650c1f1e1f1e1f1e1f1e1030', comment: 'Approved for action' },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      params: { id: '650c1f1e1f1e1f1e1f1e1000' },
+      query: { page: '1', pageSize: '10' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await getRemarksByDocument(req, res, () => {});
+    DocumentRemark.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    assert.ok(capturedPipeline.find((s) => s.$facet));
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+  });
+
+  it('should verify listReplicas uses $facet aggregation pipeline', async () => {
+    const originalAggregate = DocumentReplica.aggregate;
+    let capturedPipeline = null;
+
+    DocumentReplica.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            { _id: '650c1f1e1f1e1f1e1f1e1040', id: '650c1f1e1f1e1f1e1f1e1040', title: 'Suggested Draft' },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      params: { id: '650c1f1e1f1e1f1e1f1e1000' },
+      query: { page: '1', pageSize: '10' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await listReplicas(req, res, () => {});
+    DocumentReplica.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    assert.ok(capturedPipeline.find((s) => s.$facet));
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+  });
+
+  it('should verify listEmployees uses $facet aggregation pipeline with department lookup', async () => {
+    const originalAggregate = User.aggregate;
+    let capturedPipeline = null;
+
+    User.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            {
+              _id: '650c1f1e1f1e1f1e1f1e1050',
+              id: '650c1f1e1f1e1f1e1f1e1050',
+              name: 'John Doe',
+              departmentId: { _id: '650c1f1e1f1e1f1e1f1e1001', name: 'Civil', code: 'CIVIL' },
+            },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      query: { page: '1', pageSize: '10' },
+      user: { role: 'super_admin' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await listEmployees(req, res, () => {});
+    User.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    assert.ok(capturedPipeline.find((s) => s.$facet));
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+  });
+
+  it('should verify getMyRequests and listAllRequests in email controller use $facet aggregation pipeline', async () => {
+    const originalAggregate = EmailRequest.aggregate;
+    let capturedPipelineMy = null;
+    let capturedPipelineAll = null;
+
+    EmailRequest.aggregate = async (pipeline) => {
+      if (!capturedPipelineMy) {
+        capturedPipelineMy = pipeline;
+      } else {
+        capturedPipelineAll = pipeline;
+      }
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            { _id: '650c1f1e1f1e1f1e1f1e1060', id: '650c1f1e1f1e1f1e1f1e1060', requestedEmail: 'new@gov.in' },
+          ],
+        },
+      ];
+    };
+
+    let responseDataMy = null;
+    const reqMy = {
+      query: { page: '1', pageSize: '10' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1050' },
+    };
+    const resMy = {
+      status() { return this; },
+      json(data) { responseDataMy = data; return this; },
+    };
+
+    await getMyRequests(reqMy, resMy, () => {});
+
+    let responseDataAll = null;
+    const reqAll = {
+      query: { page: '1', pageSize: '10', status: 'pending' },
+    };
+    const resAll = {
+      status() { return this; },
+      json(data) { responseDataAll = data; return this; },
+    };
+
+    await listAllRequests(reqAll, resAll, () => {});
+    EmailRequest.aggregate = originalAggregate;
+
+    assert.ok(capturedPipelineMy);
+    assert.ok(capturedPipelineMy.find((s) => s.$facet));
+    assert.strictEqual(responseDataMy.success, true);
+    assert.strictEqual(responseDataMy.total, 1);
+
+    assert.ok(capturedPipelineAll);
+    assert.ok(capturedPipelineAll.find((s) => s.$facet));
+    assert.strictEqual(responseDataAll.success, true);
+    assert.strictEqual(responseDataAll.total, 1);
+  });
+
+  it('should validate Notification model schema definition and paths without virtual aliases', () => {
+    const paths = Object.keys(Notification.schema.paths);
+    assert.ok(paths.includes('title'));
+    assert.ok(paths.includes('message'));
+    assert.ok(paths.includes('classification'));
+    assert.ok(paths.includes('priority'));
+    assert.ok(paths.includes('broadcast'));
+    assert.ok(paths.includes('createdBy'));
+    assert.ok(paths.includes('targetUser'));
+    assert.ok(paths.includes('targetEmployeeId'));
+    assert.ok(paths.includes('fileReferenceNumber'));
+    assert.ok(paths.includes('fileReferenceId'));
+    assert.ok(paths.includes('notifyDate'));
+    assert.ok(paths.includes('readCount'));
+    assert.ok(paths.includes('unreadCount'));
+    assert.ok(paths.includes('status'));
+
+    const virtualKeys = Object.keys(Notification.schema.virtuals);
+    // Should not have virtual aliases like task, reminderTitle, etc.
+    assert.ok(!virtualKeys.includes('task'));
+    assert.ok(!virtualKeys.includes('reminderTitle'));
+
+    // Check classification enum values
+    const classificationEnum = Notification.schema.paths.classification.options.enum.values;
+    assert.deepStrictEqual(classificationEnum, [
+      'System Notice',
+      'Workflow Directive',
+      'Security & Compliance',
+      'Official Reminder',
+    ]);
+  });
+
+  it('should validate NotificationRead model schema definition and compound unique index', () => {
+    const paths = Object.keys(NotificationRead.schema.paths);
+    assert.ok(paths.includes('notificationId'));
+    assert.ok(paths.includes('userId'));
+    assert.ok(paths.includes('readAt'));
+
+    const indexes = NotificationRead.schema.indexes();
+    const compoundUniqueIndex = indexes.find(
+      (idx) => idx[0].notificationId === 1 && idx[0].userId === 1 && idx[1].unique === true
+    );
+    assert.ok(compoundUniqueIndex, 'Must define a compound unique index on { notificationId: 1, userId: 1 }');
+  });
+
+  it('should verify getNotificationCounts uses aggregation pipeline and returns all required metrics', async () => {
+    const originalDistinct = NotificationRead.distinct;
+    const originalAggregate = Notification.aggregate;
+    let capturedPipeline = null;
+
+    NotificationRead.distinct = async () => ['650c1f1e1f1e1f1e1f1e9999'];
+    Notification.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          total: [{ count: 45 }],
+          global: [{ count: 18 }],
+          specific: [{ count: 15 }],
+          self: [{ count: 12 }],
+          unread: [{ count: 7 }],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = { user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' } };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await getNotificationCounts(req, res, () => {});
+    NotificationRead.distinct = originalDistinct;
+    Notification.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage);
+    assert.ok(facetStage.$facet.total);
+    assert.ok(facetStage.$facet.global);
+    assert.ok(facetStage.$facet.specific);
+    assert.ok(facetStage.$facet.self);
+    assert.ok(facetStage.$facet.unread);
+
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.totalNotifications, 45);
+    assert.strictEqual(responseData.data.globalBroadcastNotificationCount, 18);
+    assert.strictEqual(responseData.data.specificUserNotificationCount, 15);
+    assert.strictEqual(responseData.data.selfNotificationCount, 12);
+    assert.strictEqual(responseData.data.unreadTotalCount, 7);
+    assert.strictEqual(responseData.data.readTotalCount, 38);
+  });
+
+  it('should verify listNotifications uses $facet aggregation pipeline with pagination and filters', async () => {
+    const originalAggregate = Notification.aggregate;
+    let capturedPipeline = null;
+
+    const mockNotif = {
+      _id: '650c1f1e1f1e1f1e1f1e8888',
+      title: 'Road Maintenance Directive',
+      message: 'Mandatory field inspection by end of week.',
+      classification: 'Workflow Directive',
+      priority: 'urgent',
+      broadcast: 'global',
+      isRead: false,
+      readCount: 12,
+      unreadCount: 40,
+    };
+
+    Notification.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [mockNotif],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      query: { page: '1', pageSize: '10', classification: 'Workflow Directive', isRead: 'false' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await listNotifications(req, res, () => {});
+    Notification.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    assert.ok(capturedPipeline.find((s) => s.$facet));
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+    assert.strictEqual(responseData.data[0].title, 'Road Maintenance Directive');
+    assert.strictEqual(responseData.data[0].isRead, false);
+  });
+
+  it('should verify createNotification validates input and creates document with correct fields', async () => {
+    const originalCreate = Notification.create;
+    const originalUserCount = User.countDocuments;
+    let capturedDoc = null;
+
+    Notification.create = async (doc) => {
+      capturedDoc = doc;
+      return { _id: '650c1f1e1f1e1f1e1f1e7777', ...doc };
+    };
+    User.countDocuments = async () => 25;
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      body: {
+        title: 'System Security Patching',
+        message: 'Servers will restart at midnight.',
+        classification: 'Security & Compliance',
+        priority: 'immediate',
+        broadcast: 'global',
+      },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await createNotification(req, res, () => {});
+    Notification.create = originalCreate;
+    User.countDocuments = originalUserCount;
+
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(capturedDoc.title, 'System Security Patching');
+    assert.strictEqual(capturedDoc.classification, 'Security & Compliance');
+    assert.strictEqual(capturedDoc.priority, 'immediate');
+    assert.strictEqual(capturedDoc.broadcast, 'global');
+    assert.strictEqual(capturedDoc.createdBy, req.user.id);
+  });
+
+  it('should allow Super Admin to target a specific user by employeeId', async () => {
+    const originalCreate = Notification.create;
+    const originalFindOne = User.findOne;
+    let capturedDoc = null;
+
+    Notification.create = async (doc) => {
+      capturedDoc = doc;
+      return { _id: '650c1f1e1f1e1f1e1f1e7777', ...doc };
+    };
+    User.findOne = () => ({
+      select: async () => ({ _id: '650c1f1e1f1e1f1e1f1e2222', employeeId: 'EMP-1001' }),
+    });
+
+    let statusCode = null;
+    let responseData = null;
+    const req = {
+      body: {
+        title: 'Tender Review Notice',
+        message: 'Please review tender before 5 PM.',
+        classification: 'Workflow Directive',
+        priority: 'urgent',
+        broadcast: 'specific_user',
+        employeeId: 'EMP-1001',
+      },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await createNotification(req, res, () => {});
+    Notification.create = originalCreate;
+    User.findOne = originalFindOne;
+
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(capturedDoc.broadcast, 'specific_user');
+    assert.strictEqual(capturedDoc.targetUser, '650c1f1e1f1e1f1e1f1e2222');
+    assert.strictEqual(capturedDoc.targetEmployeeId, 'EMP-1001');
+    assert.strictEqual(capturedDoc.unreadCount, 1);
+  });
+
+  it('should forbid non-super-admin users from creating global or specific_user notifications', async () => {
+    let statusCode = null;
+    let responseData = null;
+
+    const req = {
+      body: {
+        title: 'Unauthorized Global Notice',
+        classification: 'System Notice',
+        broadcast: 'global',
+      },
+      user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await createNotification(req, res, () => {});
+
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.message.includes('Only Super Admin has permission'));
+  });
+
+  it('should allow createNotification with valid fileReferenceNumber and link document', async () => {
+    const originalCreate = Notification.create;
+    const originalFindOne = Document.findOne;
+    let capturedDoc = null;
+
+    Notification.create = async (doc) => {
+      capturedDoc = doc;
+      return { _id: '650c1f1e1f1e1f1e1f1e7777', ...doc };
+    };
+    Document.findOne = () => ({
+      select: async () => ({ _id: '650c1f1e1f1e1f1e1f1e9999', fileNumber: 'MOR/CIVIL/2026/F-001' }),
+    });
+
+    let statusCode = null;
+    let responseData = null;
+    const req = {
+      body: {
+        title: 'Document Action Required',
+        classification: 'Official Reminder',
+        broadcast: 'self',
+        fileReferenceNumber: 'MOR/CIVIL/2026/F-001',
+      },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'employee' },
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await createNotification(req, res, () => {});
+    Notification.create = originalCreate;
+    Document.findOne = originalFindOne;
+
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(capturedDoc.fileReferenceNumber, 'MOR/CIVIL/2026/F-001');
+    assert.strictEqual(capturedDoc.fileReferenceId, '650c1f1e1f1e1f1e1f1e9999');
+  });
+
+  it('should reject createNotification with non-existent fileReferenceNumber with 404', async () => {
+    const originalFindOne = Document.findOne;
+    Document.findOne = () => ({
+      select: async () => null,
+    });
+
+    let statusCode = null;
+    let responseData = null;
+    const req = {
+      body: {
+        title: 'Non-existent Doc Reminder',
+        classification: 'Official Reminder',
+        broadcast: 'self',
+        fileReferenceNumber: 'INVALID/FILE/999',
+      },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'employee' },
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await createNotification(req, res, () => {});
+    Document.findOne = originalFindOne;
+
+    assert.strictEqual(statusCode, 404);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.message.includes('INVALID/FILE/999'));
+  });
+
+  it('should verify markAsRead records receipt in NotificationRead and updates counters', async () => {
+    const originalFindById = Notification.findById;
+    const originalFindOneAndUpdate = NotificationRead.findOneAndUpdate;
+    const originalFindByIdAndUpdate = Notification.findByIdAndUpdate;
+
+    let updatedCounter = false;
+    let capturedReceiptQuery = null;
+
+    Notification.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e7777', title: 'Task' });
+    NotificationRead.findOneAndUpdate = async (filter, update) => {
+      capturedReceiptQuery = { filter, update };
+      return null; // indicates new insert
+    };
+    Notification.findByIdAndUpdate = async (id, update) => {
+      if (update.$inc && update.$inc.readCount === 1) {
+        updatedCounter = true;
+      }
+      return {};
+    };
+
+    let responseData = null;
+    const req = {
+      params: { id: '650c1f1e1f1e1f1e1f1e7777' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await markAsRead(req, res, () => {});
+
+    Notification.findById = originalFindById;
+    NotificationRead.findOneAndUpdate = originalFindOneAndUpdate;
+    Notification.findByIdAndUpdate = originalFindByIdAndUpdate;
+
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.isRead, true);
+    assert.ok(capturedReceiptQuery);
+    assert.strictEqual(updatedCounter, true);
+  });
+
+  it('should verify getMyNotifications allows regular users to get global & targeted notifications with exact projection', async () => {
+    const originalAggregate = Notification.aggregate;
+    let capturedPipeline = null;
+
+    const mockItem = {
+      _id: '6b01c19d5e55ec413ae0486c',
+      title: 'Security Audit Compliance Reminder',
+      fileReferenceId: {
+        _id: '6b015c6d82396e5d536f770f',
+        fileNumber: 'MOR/ENG/2026/F-002',
+        title: 'Track Modernization Phase 2',
+        subject: 'Sanction of steel rails procurement',
+      },
+      notifyDate: new Date('2026-11-21T18:00:00.000Z'),
+      priority: 'urgent',
+      createdBy: {
+        _id: '6afc950bd257f238dbc796e0',
+        name: 'Alice Dept Admin',
+        email: 'alice.admin@example.com',
+        role: 'department_admin',
+      },
+      targetEmployeeId: 'MOR/ENG/045',
+      message: 'Please verify two-factor authentication or sign required document before deadline.',
+      status: 'active',
+      createdAt: new Date('2026-11-21T16:06:53.451Z'),
+      updatedAt: new Date('2026-11-21T16:08:13.745Z'),
+      isRead: true,
+    };
+
+    Notification.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [mockItem],
+        },
+      ];
+    };
+
+    let responseData = null;
+    const req = {
+      query: { page: '1', pageSize: '10' },
+      user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+    };
+    const res = {
+      status() { return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await getMyNotifications(req, res, () => {});
+    Notification.aggregate = originalAggregate;
+
+    assert.ok(capturedPipeline);
+    const matchStage = capturedPipeline.find((s) => s.$match);
+    assert.ok(matchStage);
+    assert.strictEqual(matchStage.$match.status, 'active');
+    assert.ok(matchStage.$match.$or);
+
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+    const notif = responseData.data[0];
+    assert.strictEqual(notif._id, '6b01c19d5e55ec413ae0486c');
+    assert.strictEqual(notif.title, 'Security Audit Compliance Reminder');
+    assert.strictEqual(notif.fileReferenceId.fileNumber, 'MOR/ENG/2026/F-002');
+    assert.strictEqual(notif.createdBy.name, 'Alice Dept Admin');
+    assert.strictEqual(notif.targetEmployeeId, 'MOR/ENG/045');
+    assert.strictEqual(notif.isRead, true);
+  });
+
+  it('should forbid non-super-admin from accessing getNotificationCounts and listNotifications', async () => {
+    let statusCodeCounts = null;
+    let responseDataCounts = null;
+    const reqNonAdmin = { user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' }, query: {} };
+    const resCounts = {
+      status(code) { statusCodeCounts = code; return this; },
+      json(data) { responseDataCounts = data; return this; },
+    };
+
+    await getNotificationCounts(reqNonAdmin, resCounts, () => {});
+    assert.strictEqual(statusCodeCounts, 403);
+    assert.strictEqual(responseDataCounts.success, false);
+
+    let statusCodeList = null;
+    let responseDataList = null;
+    const resList = {
+      status(code) { statusCodeList = code; return this; },
+      json(data) { responseDataList = data; return this; },
+    };
+
+    await listNotifications(reqNonAdmin, resList, () => {});
+    assert.strictEqual(statusCodeList, 403);
+    assert.strictEqual(responseDataList.success, false);
+  });
+
+  it('should allow Super Admin to update any notification but allow employee to update only self notification', async () => {
+    const originalFindById = Notification.findById;
+
+    // 1. Employee trying to edit a global broadcast -> 403
+    Notification.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e7777',
+      createdBy: '650c1f1e1f1e1f1e1f1e3333',
+      broadcast: 'global',
+      save: async () => {},
+    });
+
+    let statusCode = null;
+    let responseData = null;
+    const reqEmpGlobal = {
+      params: { id: '650c1f1e1f1e1f1e1f1e7777' },
+      body: { title: 'Updated' },
+      user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(data) { responseData = data; return this; },
+    };
+
+    await updateNotification(reqEmpGlobal, res, () => {});
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+
+    // 2. Employee editing their own self reminder -> 200
+    let saved = false;
+    Notification.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e7777',
+      createdBy: '650c1f1e1f1e1f1e1f1e3333',
+      broadcast: 'self',
+      save: async () => { saved = true; },
+    });
+
+    statusCode = null;
+    responseData = null;
+    const reqEmpSelf = {
+      params: { id: '650c1f1e1f1e1f1e1f1e7777' },
+      body: { title: 'Updated Self Title' },
+      user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+    };
+
+    await updateNotification(reqEmpSelf, res, () => {});
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(saved, true);
+
+    // 3. Super Admin editing any notification -> 200
+    saved = false;
+    Notification.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e7777',
+      createdBy: '650c1f1e1f1e1f1e1f1e9999',
+      broadcast: 'global',
+      save: async () => { saved = true; },
+    });
+
+    const reqSuperAdmin = {
+      params: { id: '650c1f1e1f1e1f1e1f1e7777' },
+      body: { title: 'Super Admin Override' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+
+    await updateNotification(reqSuperAdmin, res, () => {});
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(saved, true);
+
+    Notification.findById = originalFindById;
   });
 });
