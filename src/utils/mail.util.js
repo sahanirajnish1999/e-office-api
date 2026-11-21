@@ -153,3 +153,34 @@ export const sendAccountCreatedEmail = async ({
     html,
   });
 };
+
+/**
+ * Send digital signature verification OTP email
+ */
+export const sendSignatureOtpEmail = async (email, otp, documentTitle = 'Official Document') => {
+  const subject = `Digital Signature Verification OTP - ${documentTitle}`;
+  const text = `Your OTP to digitally sign the document "${documentTitle}" is: ${otp}. This code is valid for 10 minutes.\nIf you did not request this signature, please ignore this email.`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+      <div style="background-color: #1a365d; padding: 20px; color: white; text-align: center;">
+        <h2 style="margin: 0;">Digital Signature Verification</h2>
+      </div>
+      <div style="padding: 24px; color: #2d3748;">
+        <p>You requested to digitally sign the document: <b>${documentTitle}</b>.</p>
+        <p>Use the following 6-digit one-time password (OTP) to complete the verification:</p>
+        <div style="text-align: center; margin: 24px 0;">
+          <span style="font-size: 32px; letter-spacing: 6px; font-weight: bold; background: #ebf8ff; color: #2b6cb0; padding: 12px 24px; border-radius: 8px; border: 1px dashed #3182ce; display: inline-block;">${otp}</span>
+        </div>
+        <p style="font-size: 13px; color: #718096;">This OTP is valid for <b>10 minutes</b>. After verification, your signature will be submitted for administrative review and approval.</p>
+        <p style="font-size: 13px; color: #718096; margin-top: 20px;">If you did not initiate this request, please contact your administrator immediately.</p>
+      </div>
+    </div>
+  `;
+
+  return sendMail({
+    to: email,
+    subject,
+    text,
+    html,
+  });
+};

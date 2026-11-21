@@ -28,11 +28,69 @@ export const upload = multer({
 });
 
 /**
+ * Clean up all files uploaded by Multer for the current request.
+ * Safely handles single file (req.file) or multiple files (req.files array or object).
+ */
+export const cleanupUploadedFiles = (req) => {
+  const files = [];
+
+  if (req.file?.path) {
+    files.push(req.file.path);
+  }
+
+  if (req.files) {
+    if (Array.isArray(req.files)) {
+      req.files.forEach((f) => f?.path && files.push(f.path));
+    } else if (typeof req.files === 'object') {
+      Object.values(req.files).forEach((fieldArray) => {
+        if (Array.isArray(fieldArray)) {
+          fieldArray.forEach((f) => f?.path && files.push(f.path));
+        }
+      });
+    }
+  }
+
+  for (const filePath of files) {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (err) {
+      console.warn(`Failed to cleanup temp file ${filePath}:`, err.message);
+    }
+  }
+};
+
+/**
+ * Middleware that watches the response lifecycle.
+ * If the API response finishes with an error status (>= 400),
+ * or if the client connection closes/aborts before finishing (e.g. POST /api/documents - - ms - -),
+ * it automatically deletes all temp uploaded files from disk.
+ */
+export const autoCleanupOnError = (req, res, next) => {
+  res.on('finish', () => {
+    if (res.statusCode >= 400) {
+      cleanupUploadedFiles(req);
+    }
+  });
+
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      cleanupUploadedFiles(req);
+    }
+  });
+
+  next();
+};
+
+/**
  * Multer error handler middleware.
- * Place immediately after upload.fields() / upload.single() in the route chain
- * to return clean, user-friendly JSON responses for upload errors.
+ * If Multer encounters an error, it deletes any uploaded files and returns clean JSON.
  */
 export const handleMulterError = (err, req, res, next) => {
+  // Delete any uploaded files on Multer error
+  cleanupUploadedFiles(req);
+
   if (err instanceof multer.MulterError) {
     const fieldName = err.field || 'file';
 

@@ -6,6 +6,12 @@ import { Department } from '../models/department.model.js';
 import { DocumentLog } from '../models/document.log.model.js';
 import { DocumentPermission } from '../models/document.permission.model.js';
 import { DocumentForward } from '../models/document.forward.model.js';
+import { DocumentSticky } from '../models/document.sticky.model.js';
+import { DocumentSignature } from '../models/document.signature.model.js';
+import { DocumentRemark } from '../models/document.remark.model.js';
+import { DocumentFile } from '../models/document.file.model.js';
+import { VirtualStickyNote } from '../models/virtual.sticky.model.js';
+import { User } from '../models/user.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../utils/file.util.js';
@@ -20,20 +26,6 @@ export const createDocument = async (req, res, next) => {
   try {
     const mainFile = req.files?.file?.[0] || req.file;
     const logoFile = req.files?.logo?.[0];
-
-    if (!mainFile) {
-      return res.status(400).json({
-        success: false,
-        message: 'No file uploaded. Please upload a file with the key "file"',
-      });
-    }
-
-    const cleanupTempFiles = () => {
-      try {
-        if (mainFile?.path && fs.existsSync(mainFile.path)) fs.unlinkSync(mainFile.path);
-        if (logoFile?.path && fs.existsSync(logoFile.path)) fs.unlinkSync(logoFile.path);
-      } catch {}
-    };
 
     const {
       fileNumber,
@@ -55,14 +47,16 @@ export const createDocument = async (req, res, next) => {
       topOtherDetails,
       footerDetails,
       logoFileName,
+      pageNumber,
+      filePageNumber,
     } = req.body;
 
+    const finalPageNumber = parseInt(pageNumber || filePageNumber || 1, 10) || 1;
     const finalTitle = (title || fileTitle || '').trim();
     const finalSubject = (subject || fileSubject || '').trim();
     const finalRegistrationDate = registrationDate || fileDate;
 
     if (!finalTitle || !finalSubject) {
-      cleanupTempFiles();
       return res.status(400).json({
         success: false,
         message: 'File title and subject are required fields',
@@ -70,7 +64,6 @@ export const createDocument = async (req, res, next) => {
     }
 
     if (!finalRegistrationDate) {
-      cleanupTempFiles();
       return res.status(400).json({
         success: false,
         message: 'registrationDate must be chosen manually (e.g., 2026-11-17)',
@@ -81,7 +74,6 @@ export const createDocument = async (req, res, next) => {
     const validPriorities = ['routine', 'urgent', 'immediate'];
     const chosenPriority = (priority || filePriority || 'routine').toLowerCase();
     if (!validPriorities.includes(chosenPriority)) {
-      cleanupTempFiles();
       return res.status(400).json({
         success: false,
         message: `Invalid priority '${chosenPriority}'. Allowed options: ${validPriorities.join(', ')}`,
@@ -92,7 +84,6 @@ export const createDocument = async (req, res, next) => {
     const validAccessControls = ['general', 'restricted', 'confidential', 'secret'];
     const chosenAccess = (accessControl || targetAudience || 'general').toLowerCase();
     if (!validAccessControls.includes(chosenAccess)) {
-      cleanupTempFiles();
       return res.status(400).json({
         success: false,
         message: `Invalid accessControl '${chosenAccess}'. Allowed options: ${validAccessControls.join(', ')}`,
@@ -106,7 +97,6 @@ export const createDocument = async (req, res, next) => {
     }
 
     if (!targetDeptId || !isValidObjectId(targetDeptId)) {
-      cleanupTempFiles();
       return res.status(400).json({
         success: false,
         message: 'A valid departmentId must be specified for this file',
@@ -115,7 +105,6 @@ export const createDocument = async (req, res, next) => {
 
     const dept = await Department.findById(targetDeptId);
     if (!dept) {
-      cleanupTempFiles();
       return res.status(404).json({
         success: false,
         message: 'Target department does not exist',
@@ -131,7 +120,6 @@ export const createDocument = async (req, res, next) => {
     // Check if fileNumber already exists (guards both manual and auto-generated values)
     const existingFile = await Document.findOne({ fileNumber: finalFileNumber });
     if (existingFile) {
-      cleanupTempFiles();
       return res.status(409).json({
         success: false,
         message: `A document with file number '${finalFileNumber}' already exists`,
@@ -169,11 +157,23 @@ export const createDocument = async (req, res, next) => {
     // Pre-generate document ObjectId to organize files in dedicated folders
     const docId = new mongoose.Types.ObjectId();
 
-    // Organize main file in uploads/uploaded-files/<docId>/files/
-    const movedMain = moveToDocumentFolder(mainFile.path, docId, 'files');
-    const finalFilePath = movedMain ? movedMain.destPath : mainFile.path;
-    const finalStoredFilename = movedMain ? movedMain.filename : mainFile.filename;
-    const fileUrl = movedMain ? movedMain.fileUrl : `/uploads/${mainFile.filename}`;
+    // Organize main file in uploads/uploaded-files/<docId>/files/ if provided
+    let finalFilePath = '';
+    let finalStoredFilename = '';
+    let fileUrl = '';
+    let originalName = '';
+    let mimeType = '';
+    let fileSize = 0;
+
+    if (mainFile) {
+      const movedMain = moveToDocumentFolder(mainFile.path, docId, 'files');
+      finalFilePath = movedMain ? movedMain.destPath : mainFile.path;
+      finalStoredFilename = movedMain ? movedMain.filename : mainFile.filename;
+      fileUrl = movedMain ? movedMain.fileUrl : `/uploads/${mainFile.filename}`;
+      originalName = mainFile.originalname || '';
+      mimeType = mainFile.mimetype || '';
+      fileSize = mainFile.size || 0;
+    }
 
     // Organize logo in uploads/uploaded-files/<docId>/logo/ if uploaded
     let logoUrl = '';
@@ -197,12 +197,13 @@ export const createDocument = async (req, res, next) => {
       accessControl: chosenAccess,
       registrationDate: new Date(finalRegistrationDate),
       highlights: parsedHighlights,
-      originalName: mainFile.originalname,
+      originalName,
       storedFilename: finalStoredFilename,
       filePath: finalFilePath,
       fileUrl,
-      mimeType: mainFile.mimetype,
-      fileSize: mainFile.size,
+      mimeType,
+      fileSize,
+      pageNumber: finalPageNumber,
       logoFileName: finalLogoFileName,
       logoUrl,
       logoOriginalName,
@@ -213,6 +214,28 @@ export const createDocument = async (req, res, next) => {
       departmentId: targetDeptId,
       createdBy: req.user.id,
     });
+
+    // If a physical file was attached at creation, create an initial DocumentFile record
+    if (mainFile) {
+      await DocumentFile.create({
+        documentId: document._id,
+        uploadUserId: req.user.id || req.user._id,
+        uploadTime: new Date(),
+        originalName,
+        storedFilename: finalStoredFilename,
+        filePath: finalFilePath,
+        fileUrl,
+        mimeType,
+        fileSize,
+        pageNumber: finalPageNumber,
+        fileSummary: (req.body.fileSummary || '').trim(),
+        status: 'approve',
+        approvedBy: req.user.id || req.user._id,
+        approvedAt: new Date(),
+      }).catch((fileErr) => {
+        console.warn('Warning creating initial DocumentFile record:', fileErr.message);
+      });
+    }
 
     // Automatically grant creator full owner file access permissions
     const permissionDocs = [
@@ -453,19 +476,42 @@ export const getDocumentById = async (req, res, next) => {
       });
     }
 
-    const forwards = await DocumentForward.find({
-      documentId: document._id,
-      isDeletedForDept: false,
-    })
-      .populate('targetDepartmentId', 'name code')
-      .populate('fromDepartmentId', 'name code')
-      .populate('forwardedBy', 'name email');
+    const currentUserId = req.user.id || req.user._id;
+
+    const [forwards, stickies, signatures, remarks, files, userVirtualStickies] = await Promise.all([
+      DocumentForward.find({
+        documentId: document._id,
+        isDeletedForDept: false,
+      })
+        .populate('targetDepartmentId', 'name code')
+        .populate('fromDepartmentId', 'name code')
+        .populate('forwardedBy', 'name email'),
+      DocumentSticky.find({ documentId: document._id }).sort({ createdAt: -1 }),
+      DocumentSignature.find({ documentId: document._id })
+        .populate('userId', 'name email designation employeeId departmentId')
+        .populate('approvedBy', 'name email designation')
+        .sort({ createdAt: -1 }),
+      DocumentRemark.find({ documentId: document._id })
+        .populate('userId', 'name email designation employeeId departmentId')
+        .sort({ createdAt: -1 }),
+      DocumentFile.find({ documentId: document._id })
+        .populate('uploadUserId', 'name email designation employeeId departmentId')
+        .populate('approvedBy', 'name email designation')
+        .sort({ pageNumber: 1, createdAt: -1 }),
+      VirtualStickyNote.find({ documentId: document._id, userId: currentUserId })
+        .sort({ isPinned: -1, createdAt: -1 }),
+    ]);
 
     res.status(200).json({
       success: true,
       userPermission: req.userPermission,
       data: {
         ...document.toObject(),
+        files,
+        remarks,
+        signatures,
+        stickies,
+        userVirtualStickies,
         forwardedDepartments: forwards,
       },
     });
@@ -872,7 +918,7 @@ export const updateForwardedPermissions = async (req, res, next) => {
 export const addRemark = async (req, res, next) => {
   try {
     const { comment } = req.body;
-    if (!comment) {
+    if (!comment || typeof comment !== 'string' || !comment.trim()) {
       return res.status(400).json({
         success: false,
         message: 'Remark comment text is required',
@@ -880,28 +926,28 @@ export const addRemark = async (req, res, next) => {
     }
 
     const document = req.document;
-    const newRemark = {
-      userId: req.user.id,
-      userName: req.user.name || req.user.email,
-      comment: comment.trim(),
-      createdAt: new Date(),
-    };
+    const userName = req.user.name || req.user.email;
 
-    document.remarks.push(newRemark);
-    await document.save();
+    const newRemark = await DocumentRemark.create({
+      documentId: document._id,
+      userId: req.user.id,
+      userName,
+      comment: comment.trim(),
+    });
 
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
       user: req.user,
       action: 'ADD_REMARK',
-      description: `Remark added by ${newRemark.userName}`,
+      description: `Remark added by ${userName}`,
       details: { comment: newRemark.comment },
+      req,
     });
 
     res.status(201).json({
       success: true,
       message: 'Remark added successfully',
-      data: document.remarks,
+      data: newRemark,
     });
   } catch (error) {
     next(error);
@@ -913,8 +959,8 @@ export const addRemark = async (req, res, next) => {
  */
 export const addSticky = async (req, res, next) => {
   try {
-    const { note, color } = req.body;
-    if (!note) {
+    const { note, color, pageNumber } = req.body;
+    if (!note || !note.trim()) {
       return res.status(400).json({
         success: false,
         message: 'Sticky note text is required',
@@ -922,29 +968,40 @@ export const addSticky = async (req, res, next) => {
     }
 
     const document = req.document;
-    const newSticky = {
+
+    // Always use authenticated user's ID and name
+    const targetUserId = req.user.id || req.user._id;
+    const authorName = req.user.name || req.user.email || 'User';
+
+    const finalPageNumber = parseInt(pageNumber, 10) || 1;
+
+    const newSticky = await DocumentSticky.create({
+      documentId: document._id,
+      userId: targetUserId,
+      createdBy: targetUserId,
+      authorName,
       color: color || 'yellow',
       note: note.trim(),
-      createdBy: req.user.id,
-      authorName: req.user.name || req.user.email,
-      createdAt: new Date(),
-    };
-
-    document.stickies.push(newSticky);
-    await document.save();
+      pageNumber: finalPageNumber,
+      status: 'pending',
+      isApproved: false,
+    });
 
     await recordDocumentLog({
-      documentId: document._id,
+      fileId: document._id,
       user: req.user,
       action: 'ADD_STICKY',
-      description: `Sticky note (${newSticky.color}) attached by ${newSticky.authorName}`,
-      details: { color: newSticky.color, note: newSticky.note },
+      description: `Sticky note (${newSticky.color}, page ${newSticky.pageNumber}) attached by ${authorName}`,
+      details: { color: newSticky.color, note: newSticky.note, pageNumber: newSticky.pageNumber },
     });
+
+    const allStickies = await DocumentSticky.find({ documentId: document._id }).sort({ createdAt: -1 });
 
     res.status(201).json({
       success: true,
       message: 'Virtual sticky note added successfully',
-      data: document.stickies,
+      data: allStickies,
+      sticky: newSticky,
     });
   } catch (error) {
     next(error);

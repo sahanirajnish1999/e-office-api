@@ -9,7 +9,6 @@ import {
   revokeDocumentPermission,
   forwardDocument,
   updateForwardedPermissions,
-  addRemark,
   addSticky,
   addNoting,
   approveNoting,
@@ -26,11 +25,30 @@ import {
   listReplicas,
   reviewReplica,
 } from '../controllers/document.replica.controller.js';
+import { getStickiesByDocument, approveSticky } from '../controllers/document.sticky.controller.js';
+import {
+  createRemark,
+  getRemarksByDocument,
+  updateRemark,
+  deleteRemark,
+} from '../controllers/document.remark.controller.js';
+import {
+  uploadDocumentFile,
+  getDocumentFiles,
+  getDocumentFileById,
+  reviewDocumentFile,
+  deleteDocumentFile,
+} from '../controllers/document.file.controller.js';
+import {
+  createVirtualSticky,
+  getVirtualStickies,
+} from '../controllers/virtual.sticky.controller.js';
+import documentSignatureRoutes from './document.signature.routes.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 import { authorizeRoles } from '../middlewares/role.middleware.js';
 import { checkDocumentAccess } from '../middlewares/document.access.middleware.js';
 import { checkPermission } from '../middlewares/permission.middleware.js';
-import { upload, handleMulterError } from '../middlewares/upload.middleware.js';
+import { upload, handleMulterError, autoCleanupOnError } from '../middlewares/upload.middleware.js';
 
 const router = Router();
 
@@ -47,6 +65,7 @@ router.post(
     { name: 'logo', maxCount: 1 },
   ]),
   handleMulterError,
+  autoCleanupOnError,
   createDocument
 );
 router.get('/', checkPermission('canSearchFiles'), searchAndListDocuments);
@@ -98,8 +117,13 @@ router.patch(
 );
 
 // 5. Interactive Collaboration: Remarks, Stickies & Notings
-router.post('/:id/remarks', checkPermission('canAddRemarks'), checkDocumentAccess('canRemark'), addRemark);
+router.post('/:id/remarks', checkPermission('canAddRemarks'), checkDocumentAccess('canRemark'), createRemark);
+router.get('/:id/remarks', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getRemarksByDocument);
+router.patch('/:id/remarks/:remarkId', checkPermission('canAddRemarks'), checkDocumentAccess('canRemark'), updateRemark);
+router.delete('/:id/remarks/:remarkId', checkPermission('canAddRemarks'), checkDocumentAccess('canRemark'), deleteRemark);
 router.post('/:id/stickies', checkPermission('canUseStickyNotes'), checkDocumentAccess('canView'), addSticky);
+router.get('/:id/stickies', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getStickiesByDocument);
+router.patch('/:id/stickies/:stickyId/approve', checkDocumentAccess('canView'), approveSticky);
 router.post('/:id/notings', checkPermission('canAddOfficialNoting'), checkDocumentAccess('canView'), addNoting);
 router.patch(
   '/:id/notings/:notingId/approve',
@@ -109,6 +133,34 @@ router.patch(
   approveNoting
 );
 
+// 5.5 Digital Signatures (OTP email verification & Admin review)
+router.use('/:id/signatures', documentSignatureRoutes);
+
+// 5.6 Attached Document Files
+router.post(
+  '/:id/files',
+  checkPermission('canUploadDocuments'),
+  checkDocumentAccess('canView'),
+  upload.single('file'),
+  handleMulterError,
+  autoCleanupOnError,
+  uploadDocumentFile
+);
+router.get('/:id/files', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentFiles);
+router.get('/:id/files/:fileId', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentFileById);
+router.patch(
+  '/:id/files/:fileId/review',
+  authorizeRoles('super_admin', 'department_admin'),
+  checkPermission('canViewApprovals'),
+  checkDocumentAccess('canView'),
+  reviewDocumentFile
+);
+router.delete('/:id/files/:fileId', checkDocumentAccess('canView'), deleteDocumentFile);
+
+// 5.7 Personal Virtual Sticky Notes
+router.post('/:id/virtual-stickies', checkDocumentAccess('canView'), createVirtualSticky);
+router.get('/:id/virtual-stickies', checkDocumentAccess('canView'), getVirtualStickies);
+
 // 6. Replicas / Suggested Changes
 router.post(
   '/:id/replicas',
@@ -116,6 +168,7 @@ router.post(
   checkDocumentAccess('canSuggestChange'),
   upload.single('file'),
   handleMulterError,
+  autoCleanupOnError,
   createReplica
 );
 router.get('/:id/replicas', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), listReplicas);

@@ -10,9 +10,18 @@ import { DocumentForward } from '../src/models/document.forward.model.js';
 import { DocumentReplica } from '../src/models/document.replica.model.js';
 import { DocumentLog } from '../src/models/document.log.model.js';
 import { DocumentPermission } from '../src/models/document.permission.model.js';
+import { DocumentSticky } from '../src/models/document.sticky.model.js';
+import { DocumentSignature } from '../src/models/document.signature.model.js';
+import { DocumentRemark } from '../src/models/document.remark.model.js';
+import { DocumentFile } from '../src/models/document.file.model.js';
+import { VirtualStickyNote } from '../src/models/virtual.sticky.model.js';
+import { createSticky, getStickiesByDocument, approveSticky } from '../src/controllers/document.sticky.controller.js';
+import { getRemarksByDocument } from '../src/controllers/document.remark.controller.js';
+import { uploadDocumentFile, getDocumentFiles, reviewDocumentFile, deleteDocumentFile } from '../src/controllers/document.file.controller.js';
+import { createVirtualSticky, getVirtualStickies, updateVirtualSticky, deleteVirtualSticky } from '../src/controllers/virtual.sticky.controller.js';
 import { getPaginationParams, formatPaginatedResponse } from '../src/utils/pagination.util.js';
 import { checkPermission } from '../src/middlewares/permission.middleware.js';
-import { sendAccountCreatedEmail } from '../src/utils/mail.util.js';
+import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mail.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime } from '../src/controllers/user.controller.js';
@@ -150,6 +159,42 @@ describe('Project Tests', () => {
     assert.ok(paths.includes('topOtherDetails'));
     assert.ok(paths.includes('footerDetails'));
     assert.ok(paths.includes('isDeletedForOriginDept'));
+    assert.ok(paths.includes('pageNumber'));
+    assert.strictEqual(paths.includes('stickies'), false);
+    assert.strictEqual(paths.includes('remarks'), false);
+  });
+
+  it('should validate DocumentRemark model schema definition and paths', () => {
+    const paths = Object.keys(DocumentRemark.schema.paths);
+    assert.ok(paths.includes('documentId'));
+    assert.ok(paths.includes('userId'));
+    assert.ok(paths.includes('userName'));
+    assert.ok(paths.includes('comment'));
+    assert.ok(paths.includes('isEdited'));
+    assert.ok(paths.includes('editedAt'));
+    assert.strictEqual(typeof getRemarksByDocument, 'function');
+  });
+
+  it('should validate DocumentSticky model schema definition and paths', () => {
+    const paths = Object.keys(DocumentSticky.schema.paths);
+    assert.ok(paths.includes('documentId'));
+    assert.ok(paths.includes('userId'));
+    assert.ok(paths.includes('pageNumber'));
+    assert.ok(paths.includes('color'));
+    assert.ok(paths.includes('note'));
+    assert.ok(paths.includes('authorName'));
+    assert.ok(paths.includes('status'));
+    assert.ok(paths.includes('isApproved'));
+    assert.ok(paths.includes('approvedBy'));
+    assert.ok(paths.includes('approvedByName'));
+    assert.ok(paths.includes('approvedAt'));
+    assert.ok(paths.includes('approvalIpAddress'));
+    assert.ok(paths.includes('rejectionReason'));
+
+    const statusOptions = DocumentSticky.schema.path('status').enumValues;
+    assert.deepStrictEqual(statusOptions, ['pending', 'approve', 'reject']);
+    assert.strictEqual(DocumentSticky.schema.path('status').defaultValue, 'pending');
+    assert.strictEqual(DocumentSticky.schema.path('isApproved').defaultValue, false);
   });
 
   it('should validate DocumentForward model schema definition', () => {
@@ -780,5 +825,343 @@ describe('Project Tests', () => {
 
     // Should produce F-114
     assert.ok(result.endsWith('/F-114'), `Expected /F-114 but got: ${result}`);
+  });
+
+  it('should validate DocumentSignature model schema definition and paths', () => {
+    const paths = Object.keys(DocumentSignature.schema.paths);
+    assert.ok(paths.includes('documentId'));
+    assert.ok(paths.includes('userId'));
+    assert.ok(paths.includes('ipAddress'));
+    assert.ok(paths.includes('device'));
+    assert.ok(paths.includes('signedAt'));
+    assert.ok(paths.includes('isVerified'));
+    assert.ok(paths.includes('status'));
+    assert.ok(paths.includes('approvedBy'));
+    assert.ok(paths.includes('approvedAt'));
+    assert.ok(paths.includes('rejectionReason'));
+    assert.ok(paths.includes('otp'));
+    assert.ok(paths.includes('otpExpiresAt'));
+
+    const statusOptions = DocumentSignature.schema.path('status').enumValues;
+    assert.deepStrictEqual(statusOptions, ['pending', 'approve', 'reject']);
+  });
+
+  it('should verify sendSignatureOtpEmail utility exists and is a callable function', () => {
+    assert.strictEqual(typeof sendSignatureOtpEmail, 'function');
+  });
+
+  it('should validate DocumentFile model schema definition, paths, and defaults', () => {
+    const paths = Object.keys(DocumentFile.schema.paths);
+    assert.ok(paths.includes('documentId'));
+    assert.ok(paths.includes('uploadUserId'));
+    assert.ok(paths.includes('uploadTime'));
+    assert.ok(paths.includes('originalName'));
+    assert.ok(paths.includes('storedFilename'));
+    assert.ok(paths.includes('filePath'));
+    assert.ok(paths.includes('fileUrl'));
+    assert.ok(paths.includes('mimeType'));
+    assert.ok(paths.includes('fileSize'));
+    assert.ok(paths.includes('pageNumber'));
+    assert.ok(paths.includes('fileSummary'));
+    assert.ok(paths.includes('status'));
+    assert.ok(paths.includes('approvedBy'));
+    assert.ok(paths.includes('approvedAt'));
+    assert.ok(paths.includes('rejectionReason'));
+
+    const statusOptions = DocumentFile.schema.path('status').enumValues;
+    assert.deepStrictEqual(statusOptions, ['pending', 'approve', 'reject']);
+
+    // Validate defaults
+    assert.strictEqual(DocumentFile.schema.path('status').defaultValue, 'pending');
+    assert.strictEqual(DocumentFile.schema.path('pageNumber').defaultValue, 1);
+  });
+
+  it('should verify DocumentFile controller methods are defined and callable functions', () => {
+    assert.strictEqual(typeof uploadDocumentFile, 'function');
+    assert.strictEqual(typeof getDocumentFiles, 'function');
+    assert.strictEqual(typeof reviewDocumentFile, 'function');
+    assert.strictEqual(typeof deleteDocumentFile, 'function');
+  });
+
+  it('should validate VirtualStickyNote model schema definition, paths, and defaults', () => {
+    const paths = Object.keys(VirtualStickyNote.schema.paths);
+    assert.ok(paths.includes('userId'));
+    assert.ok(paths.includes('userName'));
+    assert.ok(paths.includes('documentId'));
+    assert.ok(paths.includes('detailSummary'));
+    assert.ok(paths.includes('stickyColor'));
+    assert.ok(paths.includes('isPinned'));
+    assert.ok(paths.includes('createdAt'));
+
+    // Validate defaults
+    assert.strictEqual(VirtualStickyNote.schema.path('stickyColor').defaultValue, 'yellow');
+    assert.strictEqual(VirtualStickyNote.schema.path('isPinned').defaultValue, false);
+  });
+
+  it('should verify VirtualStickyNote controller methods are defined and callable functions', () => {
+    assert.strictEqual(typeof createVirtualSticky, 'function');
+    assert.strictEqual(typeof getVirtualStickies, 'function');
+    assert.strictEqual(typeof updateVirtualSticky, 'function');
+    assert.strictEqual(typeof deleteVirtualSticky, 'function');
+  });
+
+  it('should sort virtual sticky notes with pinned items first and newest date second', () => {
+    const rawNotes = [
+      { id: 1, isPinned: false, createdAt: new Date('2026-11-20T10:00:00Z') },
+      { id: 2, isPinned: true,  createdAt: new Date('2026-11-19T10:00:00Z') }, // older, but pinned!
+      { id: 3, isPinned: false, createdAt: new Date('2026-11-21T12:00:00Z') }, // newest, unpinned
+      { id: 4, isPinned: true,  createdAt: new Date('2026-11-21T09:00:00Z') }, // newer, pinned!
+    ];
+
+    // Simulating { isPinned: -1, createdAt: -1 }
+    const sorted = [...rawNotes].sort((a, b) => {
+      if (a.isPinned !== b.isPinned) {
+        return b.isPinned ? 1 : -1;
+      }
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+
+    // Pinned notes should come first (id 4, then id 2), followed by unpinned notes by date (id 3, then id 1)
+    assert.deepStrictEqual(sorted.map(n => n.id), [4, 2, 3, 1]);
+  });
+
+  it('should verify getStickiesByDocument uses aggregation pipeline with $facet and returns paginated response', async () => {
+    const originalAggregate = DocumentSticky.aggregate;
+    let capturedPipeline = null;
+
+    DocumentSticky.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          metadata: [{ total: 1 }],
+          data: [
+            {
+              _id: '673f1b40a92f000000000002',
+              documentId: '650c1f1e1f1e1f1e1f1e1f1e',
+              note: 'Test note',
+              color: 'yellow',
+              pageNumber: 1,
+            },
+          ],
+        },
+      ];
+    };
+
+    const req = {
+      params: { documentId: '650c1f1e1f1e1f1e1f1e1f1e' },
+      query: { page: '1', pageSize: '10' },
+    };
+    let responseData = null;
+    let statusCode = null;
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    await getStickiesByDocument(req, res, () => {});
+    DocumentSticky.aggregate = originalAggregate;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+    assert.strictEqual(responseData.page, 1);
+    assert.strictEqual(responseData.pageSize, 10);
+    assert.strictEqual(responseData.totalPages, 1);
+    assert.strictEqual(responseData.data.length, 1);
+
+    // Verify pipeline stages: $match, $sort, $facet
+    assert.ok(capturedPipeline);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage);
+    assert.ok(facetStage.$facet.metadata);
+    assert.ok(facetStage.$facet.data);
+  });
+
+  it('should verify getVirtualStickies uses aggregation pipeline with $facet and returns paginated response', async () => {
+    const originalAggregate = VirtualStickyNote.aggregate;
+    let capturedPipeline = null;
+
+    VirtualStickyNote.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          metadata: [{ total: 1 }],
+          data: [
+            {
+              _id: '673f1b40a92f000000000004',
+              documentId: '650c1f1e1f1e1f1e1f1e1f1e',
+              detailSummary: 'Test personal note',
+              stickyColor: 'pink',
+              isPinned: true,
+            },
+          ],
+        },
+      ];
+    };
+
+    const req = {
+      user: { id: '650c1f1e1f1e1f1e1f1e9999' },
+      params: { id: '650c1f1e1f1e1f1e1f1e1f1e' },
+      query: { page: '1', pageSize: '10' },
+    };
+    let responseData = null;
+    let statusCode = null;
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    await getVirtualStickies(req, res, () => {});
+    VirtualStickyNote.aggregate = originalAggregate;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+    assert.strictEqual(responseData.page, 1);
+    assert.strictEqual(responseData.pageSize, 10);
+    assert.strictEqual(responseData.totalPages, 1);
+    assert.strictEqual(responseData.data.length, 1);
+
+    // Verify pipeline stages: $match, $sort, $facet
+    assert.ok(capturedPipeline);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage);
+    assert.ok(facetStage.$facet.metadata);
+    assert.ok(facetStage.$facet.data);
+  });
+
+  it('should ensure createSticky assigns userId strictly from req.user and ignores body.userId', async () => {
+    const originalFindById = Document.findById;
+    const originalCreate = DocumentSticky.create;
+    const originalLogCreate = DocumentLog.create;
+    DocumentLog.create = async () => ({});
+
+    let capturedCreateData = null;
+    Document.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e1f1e', fileNumber: 'MOR/CIVIL/2026/F-001' });
+    DocumentSticky.create = async (data) => {
+      capturedCreateData = data;
+      return { ...data, _id: '650c1f1e1f1e1f1e1f1e9999' };
+    };
+
+    const req = {
+      user: { id: '650c1f1e1f1e1f1e1f1e1111', name: 'Real User', email: 'real@example.com' },
+      body: {
+        documentId: '650c1f1e1f1e1f1e1f1e1f1e',
+        note: 'Important note',
+        color: 'pink',
+        pageNumber: 2,
+        userId: '650c1f1e1f1e1f1e1f1e9999', // spoofed/passed in body
+      },
+      headers: {},
+    };
+
+    let statusCode = null;
+    let responseData = null;
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    await createSticky(req, res, () => {});
+
+    Document.findById = originalFindById;
+    DocumentSticky.create = originalCreate;
+    DocumentLog.create = originalLogCreate;
+
+    assert.strictEqual(statusCode, 201);
+    assert.ok(capturedCreateData);
+    assert.strictEqual(capturedCreateData.userId, '650c1f1e1f1e1f1e1f1e1111');
+    assert.strictEqual(capturedCreateData.createdBy, '650c1f1e1f1e1f1e1f1e1111');
+    assert.strictEqual(capturedCreateData.authorName, 'Real User');
+  });
+
+  it('should verify approveSticky checks user permission and records IP address', async () => {
+    const originalFindById = DocumentSticky.findById;
+    const originalLogCreate = DocumentLog.create;
+    DocumentLog.create = async () => ({});
+
+    const mockSticky = {
+      _id: '673f1b40a92f000000000002',
+      documentId: '650c1f1e1f1e1f1e1f1e1f1e',
+      status: 'pending',
+      isApproved: false,
+      color: 'yellow',
+      save: async function () { return this; },
+    };
+    DocumentSticky.findById = async () => mockSticky;
+
+    // Test 1: Employee lacking permission is forbidden with 403
+    const unpermittedReq = {
+      user: { id: '650c1f1e1f1e1f1e1f1e2222', role: 'employee', permissions: {} },
+      params: { id: '650c1f1e1f1e1f1e1f1e1f1e', stickyId: '673f1b40a92f000000000002' },
+      body: { status: 'approve' },
+      headers: {},
+    };
+    let unpermittedStatusCode = null;
+    let unpermittedResponse = null;
+    const unpermittedRes = {
+      status(code) {
+        unpermittedStatusCode = code;
+        return this;
+      },
+      json(data) {
+        unpermittedResponse = data;
+        return this;
+      },
+    };
+
+    await approveSticky(unpermittedReq, unpermittedRes, () => {});
+    assert.strictEqual(unpermittedStatusCode, 403);
+    assert.strictEqual(unpermittedResponse.success, false);
+    assert.ok(unpermittedResponse.message.includes('permission'));
+
+    // Test 2: Super Admin is allowed and IP address is captured
+    const adminReq = {
+      user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'super_admin', name: 'Super Admin' },
+      params: { id: '650c1f1e1f1e1f1e1f1e1f1e', stickyId: '673f1b40a92f000000000002' },
+      body: { status: 'approve' },
+      headers: { 'x-forwarded-for': '203.0.113.195' },
+    };
+    let adminStatusCode = null;
+    let adminResponse = null;
+    const adminRes = {
+      status(code) {
+        adminStatusCode = code;
+        return this;
+      },
+      json(data) {
+        adminResponse = data;
+        return this;
+      },
+    };
+
+    await approveSticky(adminReq, adminRes, () => {});
+    DocumentSticky.findById = originalFindById;
+    DocumentLog.create = originalLogCreate;
+
+    assert.strictEqual(adminStatusCode, 200);
+    assert.strictEqual(adminResponse.success, true);
+    assert.strictEqual(mockSticky.status, 'approve');
+    assert.strictEqual(mockSticky.isApproved, true);
+    assert.strictEqual(mockSticky.approvedBy, '650c1f1e1f1e1f1e1f1e3333');
+    assert.strictEqual(mockSticky.approvalIpAddress, '203.0.113.195');
   });
 });

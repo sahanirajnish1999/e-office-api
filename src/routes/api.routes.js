@@ -5,8 +5,9 @@ import departmentRoutes from './department.routes.js';
 import employeeRoutes from './employee.routes.js';
 import emailRequestRoutes from './email.request.routes.js';
 import documentRoutes from './document.routes.js';
-import fileRoutes from './file.routes.js';
 import mailRoutes from './mail.routes.js';
+import documentStickyRoutes from './document.sticky.routes.js';
+import virtualStickyRoutes from './virtual.sticky.routes.js';
 
 const router = Router();
 
@@ -16,7 +17,8 @@ router.use('/departments', departmentRoutes);
 router.use('/employees', employeeRoutes);
 router.use('/email-requests', emailRequestRoutes);
 router.use('/documents', documentRoutes);
-router.use('/files', fileRoutes);
+router.use('/stickies', documentStickyRoutes);
+router.use('/virtual-stickies', virtualStickyRoutes);
 router.use('/mail', mailRoutes);
 
 export default router;

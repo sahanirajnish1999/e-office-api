@@ -45,13 +45,14 @@ const documentSchema = new mongoose.Schema(
       },
     ],
 
-    // 2. Physical File Information (from Multer)
-    originalName: { type: String, required: true },
-    storedFilename: { type: String, required: true },
-    filePath: { type: String, required: true },
-    fileUrl: { type: String, required: true },
-    mimeType: { type: String, required: true },
-    fileSize: { type: Number, required: true },
+    // 2. Physical File Information (from Multer - Optional)
+    originalName: { type: String, default: '' },
+    storedFilename: { type: String, default: '' },
+    filePath: { type: String, default: '' },
+    fileUrl: { type: String, default: '' },
+    mimeType: { type: String, default: '' },
+    fileSize: { type: Number, default: 0 },
+    pageNumber: { type: Number, default: 1 },
 
     // 3. Header, Letterhead & Logo Customization
     logoFileName: {
@@ -98,32 +99,7 @@ const documentSchema = new mongoose.Schema(
       index: true,
     },
 
-    // 4. Remarks from Accessors
-    remarks: [
-      {
-        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        userName: { type: String, required: true },
-        comment: { type: String, required: true, trim: true },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
-
-    // 5. Virtual Sticky Notes (Colorful)
-    stickies: [
-      {
-        color: {
-          type: String,
-          enum: ['yellow', 'blue', 'green', 'pink', 'orange', 'purple'],
-          default: 'yellow',
-        },
-        note: { type: String, required: true, trim: true },
-        createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        authorName: { type: String, required: true },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
-
-    // 6. Official Document Notings
+    // 4. Official Document Notings
     notings: [
       {
         text: { type: String, required: true, trim: true },
