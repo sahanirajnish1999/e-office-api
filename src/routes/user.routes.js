@@ -7,6 +7,7 @@ import {
   createDepartmentAdmin,
   superAdminUpdatePermissions,
   deptAdminUpdatePermissions,
+  getUserDashboardSummary,
 } from '../controllers/user.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 import { authorizeRoles } from '../middlewares/role.middleware.js';
@@ -27,6 +28,7 @@ router.post('/department/:userId/permissions', authorizeRoles('department_admin'
 
 // Profile and user queries
 router.get('/profile', checkPermission('canViewProfile'), getProfile);
+router.get('/dashboard-summary', getUserDashboardSummary);
 router.post('/last-active', updateLastActiveTime);
 router.get('/counts', authorizeRoles('super_admin'), getUserCounts);
 router.get('/', authorizeRoles('super_admin'), listUsers);

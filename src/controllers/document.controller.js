@@ -10,6 +10,7 @@ import { DocumentSticky } from '../models/document.sticky.model.js';
 import { DocumentSignature } from '../models/document.signature.model.js';
 import { DocumentRemark } from '../models/document.remark.model.js';
 import { DocumentFile } from '../models/document.file.model.js';
+import { DocumentReplica } from '../models/document.replica.model.js';
 import { VirtualStickyNote } from '../models/virtual.sticky.model.js';
 import { User } from '../models/user.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
@@ -315,6 +316,13 @@ export const createDocument = async (req, res, next) => {
  */
 export const searchAndListDocuments = async (req, res, next) => {
   try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Super Admin has permission to search and list all documents',
+      });
+    }
+
     const {
       departmentId,
       search,
@@ -1913,6 +1921,422 @@ export const getAllDocumentLogs = async (req, res, next) => {
       ...formatted,
       timeRangeApplied: appliedRange || 'all_time',
       sortOrder: sortOrder === 1 ? 'oldest' : 'newest',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get document and file counts for the current user (Department Admin, Employee, Super Admin)
+ * GET /api/documents/my-counts
+ * GET /api/documents/counts
+ */
+export const getMyDocumentCounts = async (req, res, next) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const userDeptId = req.user.departmentId;
+    const userRole = req.user.role;
+
+    const userObjId = isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+    const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+
+    let accessConditions = null;
+
+    if (userRole === 'super_admin') {
+      // Super Admin has access to all active files
+      accessConditions = null;
+    } else if (userRole === 'department_admin') {
+      const forwardedDocIds = await DocumentForward.distinct('documentId', {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      });
+
+      accessConditions = [
+        { departmentId: targetDeptObjId, isDeletedForOriginDept: false },
+        { _id: { $in: forwardedDocIds } },
+        { createdBy: userObjId },
+      ];
+    } else {
+      // Employee scoping
+      const userPermittedDocIds = await DocumentPermission.distinct('documentId', {
+        userId: userObjId,
+      });
+
+      const fwdFilter = {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      };
+      if (!req.user.isAuthorizedOfficer) {
+        fwdFilter.accessControl = { $in: ['general', 'all_employees'] };
+      } else {
+        fwdFilter.accessControl = { $in: ['general', 'restricted', 'all_employees'] };
+      }
+      const forwardedDocIds = await DocumentForward.distinct('documentId', fwdFilter);
+
+      const originDeptAccessList = ['general', 'all_employees', 'department_only'];
+      if (req.user.isAuthorizedOfficer) {
+        originDeptAccessList.push('restricted');
+      }
+
+      accessConditions = [
+        {
+          departmentId: targetDeptObjId,
+          isDeletedForOriginDept: false,
+          accessControl: { $in: originDeptAccessList },
+        },
+        { _id: { $in: forwardedDocIds } },
+        { _id: { $in: userPermittedDocIds } },
+        { createdBy: userObjId },
+      ];
+    }
+
+    const baseMatch = {
+      status: { $ne: 'withdrawn' },
+      ...(accessConditions ? { $or: accessConditions } : {}),
+    };
+
+    const canApprove =
+      userRole === 'super_admin' ||
+      userRole === 'department_admin' ||
+      Boolean(req.user.permissions?.canViewApprovals);
+
+    // Single-roundtrip $facet aggregation on Document
+    const [docMetrics] = await Document.aggregate([
+      { $match: baseMatch },
+      {
+        $facet: {
+          totalAccessibleFiles: [
+            { $count: 'count' },
+          ],
+          totalCreatedFiles: [
+            { $match: { createdBy: userObjId } },
+            { $count: 'count' },
+          ],
+          totalUrgentFiles: [
+            { $match: { priority: { $in: ['urgent', 'immediate'] } } },
+            { $count: 'count' },
+          ],
+          totalPendingApprovalFiles: canApprove
+            ? [
+                {
+                  $lookup: {
+                    from: 'documentfiles',
+                    localField: '_id',
+                    foreignField: 'documentId',
+                    as: 'attachedFiles',
+                  },
+                },
+                { $unwind: '$attachedFiles' },
+                { $match: { 'attachedFiles.status': 'pending' } },
+                { $count: 'count' },
+              ]
+            : [{ $match: { _id: null } }, { $count: 'count' }],
+        },
+      },
+    ]);
+
+    const totalAccessibleFiles = docMetrics?.totalAccessibleFiles?.[0]?.count || 0;
+    const totalCreatedFiles = docMetrics?.totalCreatedFiles?.[0]?.count || 0;
+    const totalUrgentFiles = docMetrics?.totalUrgentFiles?.[0]?.count || 0;
+    const totalPendingApprovalFiles = docMetrics?.totalPendingApprovalFiles?.[0]?.count || 0;
+
+    res.status(200).json({
+      success: true,
+      message: 'User document counts retrieved successfully',
+      data: {
+        totalAccessibleFiles,
+        totalCreatedFiles,
+        totalUrgentFiles,
+        totalPendingApprovalFiles,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Search & List Documents with Alphabetical Title Index (A-Z)
+ * Projects strictly: fileNumber, fileName, fileSummary, fileDepartment, fileDate, fileStatus
+ * GET /api/documents/alphabetical
+ */
+export const searchAndListDocumentsAlphabetical = async (req, res, next) => {
+  try {
+    const {
+      letter,
+      alphabet,
+      createdDate,
+      createdDateFrom,
+      createdDateTo,
+      createdAtFrom,
+      createdAtTo,
+      search,
+      text,
+      subject,
+      accessUserName,
+      accessorName,
+      userName,
+      departmentId,
+      priority,
+      accessControl,
+      fileNumber,
+      accessorId,
+      dateFrom,
+      dateTo,
+      sortAlphabetical,
+      includeWithdrawn,
+    } = req.query;
+
+    const andConditions = [];
+
+    // 1. Base status filter
+    if (includeWithdrawn !== 'true') {
+      andConditions.push({ status: { $ne: 'withdrawn' } });
+    }
+
+    // 2. Role-based scoping
+    const userId = req.user.id || req.user._id;
+    const userDeptId = req.user.departmentId;
+
+    if (req.user.role === 'super_admin') {
+      if (departmentId && isValidObjectId(departmentId)) {
+        andConditions.push({ departmentId: new mongoose.Types.ObjectId(departmentId) });
+      } else if (departmentId) {
+        andConditions.push({ departmentId });
+      }
+    } else if (req.user.role === 'department_admin') {
+      const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+      const forwardedDocIds = await DocumentForward.distinct('documentId', {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      });
+
+      andConditions.push({
+        $or: [
+          { departmentId: targetDeptObjId, isDeletedForOriginDept: false },
+          { _id: { $in: forwardedDocIds } },
+          { createdBy: isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId },
+        ],
+      });
+    } else {
+      // Employee scoping: run lookups in parallel for maximum performance
+      const userObjId = isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+      const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+
+      const fwdFilter = {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      };
+      if (!req.user.isAuthorizedOfficer) {
+        fwdFilter.accessControl = { $in: ['general', 'all_employees'] };
+      } else {
+        fwdFilter.accessControl = { $in: ['general', 'restricted', 'all_employees'] };
+      }
+
+      const [userPermittedDocIds, forwardedDocIds] = await Promise.all([
+        DocumentPermission.distinct('documentId', { userId: userObjId }),
+        DocumentForward.distinct('documentId', fwdFilter),
+      ]);
+
+      const originDeptAccessList = ['general', 'all_employees', 'department_only'];
+      if (req.user.isAuthorizedOfficer) {
+        originDeptAccessList.push('restricted');
+      }
+
+      andConditions.push({
+        $or: [
+          {
+            departmentId: targetDeptObjId,
+            isDeletedForOriginDept: false,
+            accessControl: { $in: originDeptAccessList },
+          },
+          { _id: { $in: forwardedDocIds } },
+          { _id: { $in: userPermittedDocIds } },
+          { createdBy: userObjId },
+        ],
+      });
+    }
+
+    // 3. Alphabetical Title Index (A-Z) Initial Letter Filter
+    const chosenLetter = (letter || alphabet || '').trim();
+    if (chosenLetter) {
+      const escapedLetter = chosenLetter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      andConditions.push({ title: { $regex: `^${escapedLetter}`, $options: 'i' } });
+    }
+
+    // 4. Search text in subject or title
+    const searchKeyword = (search || text || subject || '').trim();
+    if (searchKeyword) {
+      andConditions.push({
+        $or: [
+          { title: { $regex: searchKeyword, $options: 'i' } },
+          { subject: { $regex: searchKeyword, $options: 'i' } },
+        ],
+      });
+    }
+
+    // 5. File Date Filter: Strictly matched against registrationDate (single day or date range)
+    let appliedDateLabel = null;
+    const rawSingleDate = (createdDate || req.query.fileDate || req.query.date || '').trim();
+    const rawDateFrom = (createdDateFrom || dateFrom || '').trim();
+    const rawDateTo = (createdDateTo || dateTo || '').trim();
+
+    if (rawSingleDate) {
+      const parsed = new Date(rawSingleDate);
+      if (!isNaN(parsed.getTime())) {
+        const utcStart = new Date(parsed);
+        utcStart.setUTCHours(0, 0, 0, 0);
+        const utcEnd = new Date(parsed);
+        utcEnd.setUTCHours(23, 59, 59, 999);
+
+        const locStart = new Date(parsed);
+        locStart.setHours(0, 0, 0, 0);
+        const locEnd = new Date(parsed);
+        locEnd.setHours(23, 59, 59, 999);
+
+        const minStart = new Date(Math.min(utcStart.getTime(), locStart.getTime()));
+        const maxEnd = new Date(Math.max(utcEnd.getTime(), locEnd.getTime()));
+
+        andConditions.push({
+          registrationDate: { $gte: minStart, $lte: maxEnd },
+        });
+        appliedDateLabel = rawSingleDate;
+      }
+    } else if (rawDateFrom || rawDateTo) {
+      const dateCond = {};
+      if (rawDateFrom) {
+        const dFrom = new Date(rawDateFrom);
+        if (!isNaN(dFrom.getTime())) dateCond.$gte = dFrom;
+      }
+      if (rawDateTo) {
+        const dTo = new Date(rawDateTo);
+        if (!isNaN(dTo.getTime())) {
+          if (rawDateTo.length === 10) dTo.setHours(23, 59, 59, 999);
+          dateCond.$lte = dTo;
+        }
+      }
+      if (Object.keys(dateCond).length > 0) {
+        andConditions.push({ registrationDate: dateCond });
+      }
+    }
+
+    // 6. Search Access Users Name
+    const targetUserName = (accessUserName || accessorName || userName || '').trim();
+    if (targetUserName) {
+      const matchedUsers = await User.find({
+        name: { $regex: targetUserName, $options: 'i' },
+      }).select('_id');
+
+      const matchedUserIds = matchedUsers.map((u) => u._id);
+      if (matchedUserIds.length === 0) {
+        andConditions.push({ _id: { $in: [] } });
+      } else {
+        const permittedDocIds = await DocumentPermission.distinct('documentId', {
+          userId: { $in: matchedUserIds },
+        });
+
+        andConditions.push({
+          $or: [
+            { _id: { $in: permittedDocIds } },
+            { createdBy: { $in: matchedUserIds } },
+          ],
+        });
+      }
+    }
+
+    // 7. Other multi-filters
+    if (fileNumber) {
+      andConditions.push({ fileNumber: { $regex: fileNumber.trim(), $options: 'i' } });
+    }
+
+    if (priority) {
+      andConditions.push({ priority: priority.toLowerCase() });
+    }
+
+    if (accessControl) {
+      andConditions.push({ accessControl: accessControl.toLowerCase() });
+    }
+
+    if (accessorId) {
+      const accessorObjId = isValidObjectId(accessorId) ? new mongoose.Types.ObjectId(accessorId) : accessorId;
+      const accessorPermittedDocIds = await DocumentPermission.distinct('documentId', {
+        userId: accessorObjId,
+      });
+      andConditions.push({ _id: { $in: accessorPermittedDocIds } });
+    }
+
+    if (dateFrom || dateTo) {
+      const regDateCond = {};
+      if (dateFrom) regDateCond.$gte = new Date(dateFrom);
+      if (dateTo) regDateCond.$lte = new Date(dateTo);
+      andConditions.push({ registrationDate: regDateCond });
+    }
+
+    const finalMatch = andConditions.length > 0 ? { $and: andConditions } : {};
+
+    // 8. Sorting: Default to Alphabetical title (asc A-Z)
+    let sortOptions = { title: 1 };
+    if (sortAlphabetical === 'desc') {
+      sortOptions = { title: -1 };
+    } else if (sortAlphabetical === 'date_desc') {
+      sortOptions = { registrationDate: -1, createdAt: -1 };
+    }
+
+    // 9. Pagination
+    const { page, pageSize, skip } = getPaginationParams(req.query);
+
+    // 10. Single-Roundtrip Aggregation Pipeline with $facet & $lookup
+    const [result] = await Document.aggregate([
+      { $match: finalMatch },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: sortOptions },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'departments',
+                localField: 'departmentId',
+                foreignField: '_id',
+                as: 'department',
+                pipeline: [{ $project: { _id: 1, name: 1, code: 1 } }],
+              },
+            },
+            { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+            {
+              $project: {
+                _id: 0,
+                fileId: '$_id',
+                fileNumber: '$fileNumber',
+                fileName: '$title',
+                fileSummary: '$subject',
+                fileDepartment: { $ifNull: ['$department.name', 'General'] },
+                fileDate: '$registrationDate',
+                fileStatus: '$status',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const documents = result?.paginatedData || [];
+
+    const formatted = formatPaginatedResponse({
+      total,
+      page,
+      pageSize,
+      data: documents,
+    });
+
+    res.status(200).json({
+      ...formatted,
+      ...(chosenLetter ? { letter: chosenLetter.toUpperCase() } : {}),
+      ...(appliedDateLabel ? { dateApplied: appliedDateLabel, createdDateApplied: appliedDateLabel } : {}),
     });
   } catch (error) {
     next(error);

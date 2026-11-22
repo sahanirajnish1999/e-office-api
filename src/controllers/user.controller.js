@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import { User } from '../models/user.model.js';
 import { Department } from '../models/department.model.js';
+import { Document } from '../models/document.model.js';
+import { DocumentForward } from '../models/document.forward.model.js';
+import { DocumentPermission } from '../models/document.permission.model.js';
+import { Notification } from '../models/notification.model.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { sendAccountCreatedEmail } from '../utils/mail.util.js';
 import { generateNextEmployeeId } from '../utils/user.util.js';
@@ -446,6 +450,137 @@ export const listUsers = async (req, res, next) => {
         data: users,
       })
     );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get dashboard overview summary counts for current user:
+ * total file access count, pending files, total self notification count
+ * GET /api/users/dashboard-summary
+ */
+export const getUserDashboardSummary = async (req, res, next) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const userDeptId = req.user.departmentId;
+    const userRole = req.user.role;
+
+    const userObjId = isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+    const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+
+    let accessConditions = null;
+
+    if (userRole === 'super_admin') {
+      accessConditions = null;
+    } else if (userRole === 'department_admin') {
+      const forwardedDocIds = await DocumentForward.distinct('documentId', {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      });
+
+      accessConditions = [
+        { departmentId: targetDeptObjId, isDeletedForOriginDept: false },
+        { _id: { $in: forwardedDocIds } },
+        { createdBy: userObjId },
+      ];
+    } else {
+      // Employee scoping
+      const userPermittedDocIds = await DocumentPermission.distinct('documentId', {
+        userId: userObjId,
+      });
+
+      const fwdFilter = {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      };
+      if (!req.user.isAuthorizedOfficer) {
+        fwdFilter.accessControl = { $in: ['general', 'all_employees'] };
+      } else {
+        fwdFilter.accessControl = { $in: ['general', 'restricted', 'all_employees'] };
+      }
+      const forwardedDocIds = await DocumentForward.distinct('documentId', fwdFilter);
+
+      const originDeptAccessList = ['general', 'all_employees', 'department_only'];
+      if (req.user.isAuthorizedOfficer) {
+        originDeptAccessList.push('restricted');
+      }
+
+      accessConditions = [
+        {
+          departmentId: targetDeptObjId,
+          isDeletedForOriginDept: false,
+          accessControl: { $in: originDeptAccessList },
+        },
+        { _id: { $in: forwardedDocIds } },
+        { _id: { $in: userPermittedDocIds } },
+        { createdBy: userObjId },
+      ];
+    }
+
+    const baseMatch = {
+      status: { $ne: 'withdrawn' },
+      ...(accessConditions ? { $or: accessConditions } : {}),
+    };
+
+    const canApprove =
+      userRole === 'super_admin' ||
+      userRole === 'department_admin' ||
+      Boolean(req.user.permissions?.canViewApprovals);
+
+    // Run Document pipeline and Notification pipeline concurrently
+    const [docMetricsResult, notifMetricsResult] = await Promise.all([
+      Document.aggregate([
+        { $match: baseMatch },
+        {
+          $facet: {
+            totalFileAccessCount: [
+              { $count: 'count' },
+            ],
+            pendingFiles: canApprove
+              ? [
+                  {
+                    $lookup: {
+                      from: 'documentfiles',
+                      localField: '_id',
+                      foreignField: 'documentId',
+                      as: 'attachedFiles',
+                    },
+                  },
+                  { $unwind: '$attachedFiles' },
+                  { $match: { 'attachedFiles.status': 'pending' } },
+                  { $count: 'count' },
+                ]
+              : [{ $match: { _id: null } }, { $count: 'count' }],
+          },
+        },
+      ]),
+      Notification.aggregate([
+        {
+          $match: {
+            broadcast: 'self',
+            createdBy: userObjId,
+            status: { $ne: 'archived' },
+          },
+        },
+        { $count: 'count' },
+      ]),
+    ]);
+
+    const docMetrics = docMetricsResult?.[0];
+    const totalFileAccessCount = docMetrics?.totalFileAccessCount?.[0]?.count || 0;
+    const pendingFiles = docMetrics?.pendingFiles?.[0]?.count || 0;
+    const totalSelfNotificationCount = notifMetricsResult?.[0]?.count || 0;
+
+    res.status(200).json({
+      success: true,
+      message: 'User summary counts retrieved successfully',
+      data: {
+        totalFileAccessCount,
+        pendingFiles,
+        totalSelfNotificationCount,
+      },
+    });
   } catch (error) {
     next(error);
   }

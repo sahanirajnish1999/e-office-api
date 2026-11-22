@@ -24,8 +24,8 @@ import { checkPermission } from '../src/middlewares/permission.middleware.js';
 import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mail.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment } from '../src/controllers/department.controller.js';
-import { listUsers, getUserCounts, updateLastActiveTime } from '../src/controllers/user.controller.js';
-import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions } from '../src/controllers/document.controller.js';
+import { listUsers, getUserCounts, updateLastActiveTime, getUserDashboardSummary } from '../src/controllers/user.controller.js';
+import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical } from '../src/controllers/document.controller.js';
 import { generateNextEmployeeId, createEmployee, listEmployees } from '../src/controllers/employee.controller.js';
 import { listReplicas } from '../src/controllers/document.replica.controller.js';
 import { getMyRequests, listAllRequests } from '../src/controllers/email.request.controller.js';
@@ -1370,6 +1370,30 @@ describe('Project Tests', () => {
     assert.strictEqual(responseData.data[0].fileTitle, 'Road Construction');
   });
 
+  it('should return 403 for non-super_admin on searchAndListDocuments', async () => {
+    let statusCode = null;
+    let responseData = null;
+    const req = {
+      query: { page: '1', pageSize: '10' },
+      user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+    };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    await searchAndListDocuments(req, res, () => {});
+
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+  });
+
   it('should verify getUserCounts uses $facet aggregation pipeline on User', async () => {
     const originalAggregate = User.aggregate;
     const originalDeptCount = Department.countDocuments;
@@ -2182,5 +2206,418 @@ describe('Project Tests', () => {
     assert.strictEqual(saved, true);
 
     Notification.findById = originalFindById;
+  });
+
+  it('should verify getMyDocumentCounts uses $facet aggregation pipeline for department admin', async () => {
+    const origDocAgg = Document.aggregate;
+    const origFwdDistinct = DocumentForward.distinct;
+
+    let capturedPipeline = null;
+    DocumentForward.distinct = async () => ['650c1f1e1f1e1f1e1f1e0001'];
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalAccessibleFiles: [{ count: 20 }],
+          totalCreatedFiles: [{ count: 8 }],
+          totalUrgentFiles: [{ count: 5 }],
+          totalPendingApprovalFiles: [{ count: 6 }],
+        },
+      ];
+    };
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      user: {
+        id: '650c1f1e1f1e1f1e1f1e1001',
+        departmentId: '650c1f1e1f1e1f1e1f1e2001',
+        role: 'department_admin',
+      },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await getMyDocumentCounts(req, res, () => {});
+
+    // Restore
+    Document.aggregate = origDocAgg;
+    DocumentForward.distinct = origFwdDistinct;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage, 'Must use $facet in Document aggregation');
+    assert.ok(facetStage.$facet.totalAccessibleFiles, 'totalAccessibleFiles bucket exists');
+    assert.ok(facetStage.$facet.totalCreatedFiles, 'totalCreatedFiles bucket exists');
+    assert.ok(facetStage.$facet.totalUrgentFiles, 'totalUrgentFiles bucket exists');
+    assert.ok(facetStage.$facet.totalPendingApprovalFiles, 'totalPendingApprovalFiles bucket exists');
+
+    const pendingPipeline = facetStage.$facet.totalPendingApprovalFiles;
+    assert.ok(pendingPipeline.some((st) => st.$lookup), '$lookup stage exists for pending files');
+
+    assert.deepStrictEqual(responseData.data, {
+      totalAccessibleFiles: 20,
+      totalCreatedFiles: 8,
+      totalUrgentFiles: 5,
+      totalPendingApprovalFiles: 6,
+    });
+  });
+
+  it('should verify getMyDocumentCounts returns zero pending approval files for employee without approval rights', async () => {
+    const origDocAgg = Document.aggregate;
+    const origPermDistinct = DocumentPermission.distinct;
+    const origFwdDistinct = DocumentForward.distinct;
+
+    DocumentPermission.distinct = async () => [];
+    DocumentForward.distinct = async () => [];
+
+    Document.aggregate = async () => [
+      {
+        totalAccessibleFiles: [{ count: 12 }],
+        totalCreatedFiles: [{ count: 4 }],
+        totalUrgentFiles: [{ count: 2 }],
+        totalPendingApprovalFiles: [],
+      },
+    ];
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      user: {
+        id: '650c1f1e1f1e1f1e1f1e3333',
+        departmentId: '650c1f1e1f1e1f1e1f1e2001',
+        role: 'employee',
+        permissions: { canViewApprovals: false },
+      },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await getMyDocumentCounts(req, res, () => {});
+
+    Document.aggregate = origDocAgg;
+    DocumentPermission.distinct = origPermDistinct;
+    DocumentForward.distinct = origFwdDistinct;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.deepStrictEqual(responseData.data, {
+      totalAccessibleFiles: 12,
+      totalCreatedFiles: 4,
+      totalUrgentFiles: 2,
+      totalPendingApprovalFiles: 0,
+    });
+  });
+
+  it('should verify getUserDashboardSummary uses aggregation pipelines and returns user summary counts', async () => {
+    const origDocAgg = Document.aggregate;
+    const origNotifAgg = Notification.aggregate;
+    const origFwdDistinct = DocumentForward.distinct;
+
+    DocumentForward.distinct = async () => ['650c1f1e1f1e1f1e1f1e0001'];
+
+    let capturedDocPipeline = null;
+    let capturedNotifPipeline = null;
+
+    Document.aggregate = async (pipeline) => {
+      capturedDocPipeline = pipeline;
+      return [
+        {
+          totalFileAccessCount: [{ count: 25 }],
+          pendingFiles: [{ count: 7 }],
+        },
+      ];
+    };
+
+    Notification.aggregate = async (pipeline) => {
+      capturedNotifPipeline = pipeline;
+      return [{ count: 4 }];
+    };
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      user: {
+        id: '650c1f1e1f1e1f1e1f1e1001',
+        departmentId: '650c1f1e1f1e1f1e1f1e2001',
+        role: 'department_admin',
+      },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await getUserDashboardSummary(req, res, () => {});
+
+    // Restore
+    Document.aggregate = origDocAgg;
+    Notification.aggregate = origNotifAgg;
+    DocumentForward.distinct = origFwdDistinct;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.deepStrictEqual(responseData.data, {
+      totalFileAccessCount: 25,
+      pendingFiles: 7,
+      totalSelfNotificationCount: 4,
+    });
+
+    const facetStage = capturedDocPipeline.find((s) => s.$facet);
+    assert.ok(facetStage, 'Must use $facet in Document aggregation');
+    assert.ok(facetStage.$facet.totalFileAccessCount, 'totalFileAccessCount bucket exists');
+    assert.ok(facetStage.$facet.pendingFiles, 'pendingFiles bucket exists');
+    assert.ok(capturedNotifPipeline.find((s) => s.$match?.broadcast === 'self'), 'Must filter self notifications');
+  });
+
+  it('should verify getUserDashboardSummary returns zero pending files for employee without approval rights', async () => {
+    const origDocAgg = Document.aggregate;
+    const origNotifAgg = Notification.aggregate;
+    const origPermDistinct = DocumentPermission.distinct;
+    const origFwdDistinct = DocumentForward.distinct;
+
+    DocumentPermission.distinct = async () => [];
+    DocumentForward.distinct = async () => [];
+
+    Document.aggregate = async () => [
+      {
+        totalFileAccessCount: [{ count: 10 }],
+        pendingFiles: [],
+      },
+    ];
+
+    Notification.aggregate = async () => [{ count: 2 }];
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      user: {
+        id: '650c1f1e1f1e1f1e1f1e3333',
+        departmentId: '650c1f1e1f1e1f1e1f1e2001',
+        role: 'employee',
+        permissions: { canViewApprovals: false },
+      },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await getUserDashboardSummary(req, res, () => {});
+
+    Document.aggregate = origDocAgg;
+    Notification.aggregate = origNotifAgg;
+    DocumentPermission.distinct = origPermDistinct;
+    DocumentForward.distinct = origFwdDistinct;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.deepStrictEqual(responseData.data, {
+      totalFileAccessCount: 10,
+      pendingFiles: 0,
+      totalSelfNotificationCount: 2,
+    });
+  });
+
+  it('should verify searchAndListDocumentsAlphabetical uses $facet aggregation, filters by initial letter, and projects strictly fileId + 6 fields', async () => {
+    const origDocAgg = Document.aggregate;
+    let capturedPipeline = null;
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 2 }],
+          paginatedData: [
+            {
+              fileId: '650c1f1e1f1e1f1e1f1e0001',
+              fileNumber: 'MOR/ENG/2026/F-001',
+              fileName: 'Annual Budget Allocation',
+              fileSummary: 'Review of annual engineering allocation',
+              fileDepartment: 'Engineering',
+              fileDate: '2026-11-20T10:00:00.000Z',
+              fileStatus: 'active',
+            },
+            {
+              fileId: '650c1f1e1f1e1f1e1f1e0004',
+              fileNumber: 'MOR/ENG/2026/F-004',
+              fileName: 'Automated Signaling Proposal',
+              fileSummary: 'Modernization proposal for signaling',
+              fileDepartment: 'Engineering',
+              fileDate: '2026-11-21T09:30:00.000Z',
+              fileStatus: 'active',
+            },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      query: { letter: 'A', page: '1', pageSize: '10' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await searchAndListDocumentsAlphabetical(req, res, () => {});
+
+    Document.aggregate = origDocAgg;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.letter, 'A');
+    assert.strictEqual(responseData.total, 2);
+    assert.strictEqual(responseData.page, 1);
+    assert.strictEqual(responseData.pageSize, 10);
+    assert.strictEqual(responseData.totalPages, 1);
+    assert.strictEqual(responseData.data.length, 2);
+
+    // Verify projected fields contain fileId + specified keys
+    const item = responseData.data[0];
+    const expectedKeys = ['fileId', 'fileNumber', 'fileName', 'fileSummary', 'fileDepartment', 'fileDate', 'fileStatus'];
+    assert.deepStrictEqual(Object.keys(item).sort(), expectedKeys.sort());
+
+    // Verify pipeline stages
+    const matchStage = capturedPipeline.find((s) => s.$match);
+    assert.ok(matchStage, '$match stage must exist');
+
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage, '$facet stage must exist');
+    assert.ok(facetStage.$facet.totalCount, 'totalCount bucket exists');
+    assert.ok(facetStage.$facet.paginatedData, 'paginatedData bucket exists');
+
+    const projectStage = facetStage.$facet.paginatedData.find((s) => s.$project);
+    assert.ok(projectStage, '$project stage must exist in paginatedData');
+    assert.strictEqual(projectStage.$project._id, 0);
+    assert.strictEqual(projectStage.$project.fileId, '$_id');
+    assert.strictEqual(projectStage.$project.fileNumber, '$fileNumber');
+    assert.strictEqual(projectStage.$project.fileName, '$title');
+    assert.strictEqual(projectStage.$project.fileSummary, '$subject');
+    assert.strictEqual(projectStage.$project.fileDate, '$registrationDate');
+    assert.strictEqual(projectStage.$project.fileStatus, '$status');
+  });
+
+  it('should verify searchAndListDocumentsAlphabetical handles single day createdDate, search text, and access user name filters', async () => {
+    const origDocAgg = Document.aggregate;
+    const origUserFind = User.find;
+    const origPermDistinct = DocumentPermission.distinct;
+
+    let capturedPipeline = null;
+
+    User.find = () => ({
+      select: async () => [{ _id: '650c1f1e1f1e1f1e1f1e9999' }],
+    });
+
+    DocumentPermission.distinct = async () => ['650c1f1e1f1e1f1e1f1e0001'];
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            {
+              fileId: '650c1f1e1f1e1f1e1f1e0001',
+              fileNumber: 'MOR/ENG/2026/F-001',
+              fileName: 'Track Maintenance',
+              fileSummary: 'Procurement of track rails',
+              fileDepartment: 'Engineering',
+              fileDate: '2026-11-20T10:00:00.000Z',
+              fileStatus: 'active',
+            },
+          ],
+        },
+      ];
+    };
+
+    let responseData = null;
+    let statusCode = null;
+    const req = {
+      query: {
+        createdDate: '1 august 2027',
+        search: 'Rails',
+        accessUserName: 'Alice',
+      },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await searchAndListDocumentsAlphabetical(req, res, () => {});
+
+    Document.aggregate = origDocAgg;
+    User.find = origUserFind;
+    DocumentPermission.distinct = origPermDistinct;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.createdDateApplied, '1 august 2027');
+
+    const matchStage = capturedPipeline.find((s) => s.$match);
+    assert.ok(matchStage, '$match stage must exist');
+    const andArray = matchStage.$match.$and;
+    assert.ok(Array.isArray(andArray), '$and conditions array must exist');
+
+    // 1. Verify single-day date range matching strictly on registrationDate
+    const regCond = andArray.find((c) => c.registrationDate);
+    assert.ok(regCond, 'Date range condition strictly on registrationDate must exist');
+    assert.ok(regCond.registrationDate.$gte instanceof Date);
+    assert.ok(regCond.registrationDate.$lte instanceof Date);
+
+    // 2. Verify search text across title OR subject
+    const textCond = andArray.find((c) => c.$or && c.$or.some((o) => o.title && o.title.$regex === 'Rails'));
+    assert.ok(textCond, 'Search text condition on title and subject must exist');
+
+    // 3. Verify access user name condition
+    const accessCond = andArray.find((c) => c.$or && c.$or.some((o) => o._id && o._id.$in));
+    assert.ok(accessCond, 'Access user name filter must match permitted docs and createdBy');
   });
 });

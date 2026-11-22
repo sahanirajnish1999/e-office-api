@@ -1241,7 +1241,7 @@
               "response": []
             },
             {
-              "name": "2. Search & List Documents (Paginated & Multi-Filter)",
+              "name": "2. Search & List Documents (Paginated & Multi-Filter - Super Admin Only)",
               "request": {
                 "auth": {
                   "type": "bearer",
@@ -1313,7 +1313,8 @@
                       "value": "asc"
                     }
                   ]
-                }
+                },
+                "description": "Super Admin Only API to search and list all documents with multi-filter and pagination."
               },
               "response": []
             },
@@ -1404,6 +1405,126 @@
                   ]
                 },
                 "description": "Super Admin API to retrieve total, approved, pending, and rejected document file counts."
+              },
+              "response": []
+            },
+            {
+              "name": "6. Get My Document & File Counts (Department Admin & Employee)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/my-counts",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "my-counts"
+                  ]
+                },
+                "description": "Retrieve document counts for Department Admin and Employee: total accessible files, total files created by user, total urgent files, and pending files for approval by user."
+              },
+              "response": []
+            },
+            {
+              "name": "7. Get User Dashboard Summary (File Access, Pending Files, Self Notifications)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/users/dashboard-summary",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "users",
+                    "dashboard-summary"
+                  ]
+                },
+                "description": "Get user overview summary counts: total file access count, pending files, and total self notification count."
+              },
+              "response": []
+            },
+            {
+              "name": "8. Search & List Documents by Alphabetical Title Index (A-Z)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{token}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/documents/alphabetical?letter=A&page=1&pageSize=10",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "documents",
+                    "alphabetical"
+                  ],
+                  "query": [
+                    {
+                      "key": "letter",
+                      "value": "A",
+                      "description": "Initial letter filter for document title (A-Z)"
+                    },
+                    {
+                      "key": "createdDate",
+                      "value": "1 august 2027",
+                      "description": "Single-day file creation date filter (e.g. 1 august 2027 or 2027-08-01)"
+                    },
+                    {
+                      "key": "search",
+                      "value": "",
+                      "description": "Search keyword in document subject or title"
+                    },
+                    {
+                      "key": "accessUserName",
+                      "value": "",
+                      "description": "Search by accessor user name"
+                    },
+                    {
+                      "key": "page",
+                      "value": "1"
+                    },
+                    {
+                      "key": "pageSize",
+                      "value": "10"
+                    }
+                  ]
+                },
+                "description": "Search and list documents by Alphabetical Title Index (A-Z) with single-day file created date, subject/title keyword search, and access user name search. Projects fileId, fileNumber, fileName, fileSummary, fileDepartment, fileDate, and fileStatus."
               },
               "response": []
             }

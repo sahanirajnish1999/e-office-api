@@ -19,6 +19,8 @@ import {
   getDocumentLogs,
   getAllDocumentLogs,
   createDocumentLog,
+  getMyDocumentCounts,
+  searchAndListDocumentsAlphabetical,
 } from '../controllers/document.controller.js';
 import {
   createReplica,
@@ -44,6 +46,7 @@ import {
   createVirtualSticky,
   getVirtualStickies,
 } from '../controllers/virtual.sticky.controller.js';
+import { getUserDashboardSummary } from '../controllers/user.controller.js';
 import documentSignatureRoutes from './document.signature.routes.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 import { authorizeRoles } from '../middlewares/role.middleware.js';
@@ -69,11 +72,16 @@ router.post(
   autoCleanupOnError,
   createDocument
 );
-router.get('/', checkPermission('canSearchFiles'), searchAndListDocuments);
+router.get('/', authorizeRoles('super_admin'), searchAndListDocuments);
 
 // 2. Document Details & Logs
 router.get('/logs', authorizeRoles('super_admin'), getAllDocumentLogs);
 router.get('/files/counts', authorizeRoles('super_admin'), getDocumentFileCounts);
+router.get('/my-counts', checkPermission('canViewMyFiles'), getMyDocumentCounts);
+router.get('/counts', checkPermission('canViewMyFiles'), getMyDocumentCounts);
+router.get('/dashboard-summary', getUserDashboardSummary);
+router.get('/alphabetical', checkPermission('canSearchFiles'), searchAndListDocumentsAlphabetical);
+router.get('/alphabetical-index', checkPermission('canSearchFiles'), searchAndListDocumentsAlphabetical);
 router.get('/:id', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentById);
 router.get('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentLogs);
 router.post('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), createDocumentLog);
