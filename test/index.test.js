@@ -23,7 +23,7 @@ import { getPaginationParams, formatPaginatedResponse } from '../src/utils/pagin
 import { checkPermission } from '../src/middlewares/permission.middleware.js';
 import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mail.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
-import { listDepartments, updateDepartment, deleteDepartment } from '../src/controllers/department.controller.js';
+import { listDepartments, updateDepartment, deleteDepartment, getDepartmentById as getDeptById } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime, getUserDashboardSummary } from '../src/controllers/user.controller.js';
 import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical } from '../src/controllers/document.controller.js';
 import { generateNextEmployeeId, createEmployee, listEmployees } from '../src/controllers/employee.controller.js';
@@ -520,6 +520,7 @@ describe('Project Tests', () => {
           search: 'Civil',
           sortBy: 'highest_files',
         },
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
       },
       mockRes,
       () => {}
@@ -543,6 +544,75 @@ describe('Project Tests', () => {
     assert.strictEqual(dept.adminDesignation, 'Director');
     assert.strictEqual(dept.employeesCount, 5);
     assert.strictEqual(dept.filesCount, 12);
+  });
+
+  it('should return 403 for non-super_admin on listDepartments and getDepartmentById', async () => {
+    let statusCode = null;
+    let responseData = null;
+    const mockRes = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    // 1. Employee calling listDepartments -> 403
+    await listDepartments(
+      {
+        query: {},
+        user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+
+    // 2. Department Admin calling listDepartments -> 403
+    statusCode = null;
+    responseData = null;
+    await listDepartments(
+      {
+        query: {},
+        user: { id: '650c1f1e1f1e1f1e1f1e2222', role: 'department_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+
+    // 3. Employee calling getDepartmentById -> 403
+    statusCode = null;
+    responseData = null;
+    await getDeptById(
+      {
+        params: { id: '650c1f1e1f1e1f1e1f1e1001' },
+        user: { id: '650c1f1e1f1e1f1e1f1e3333', role: 'employee' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+
+    // 4. Department Admin calling getDepartmentById -> 403
+    statusCode = null;
+    responseData = null;
+    await getDeptById(
+      {
+        params: { id: '650c1f1e1f1e1f1e1f1e1001' },
+        user: { id: '650c1f1e1f1e1f1e1f1e2222', role: 'department_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
   });
 
   it('should verify getAllDocumentLogs uses aggregation pipeline with employee, department, timeRange, and sort filters', async () => {

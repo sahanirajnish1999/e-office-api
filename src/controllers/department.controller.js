@@ -45,6 +45,13 @@ export const createDepartment = async (req, res, next) => {
 
 export const listDepartments = async (req, res, next) => {
   try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Super Admin has permission to list departments',
+      });
+    }
+
     const { page, pageSize, skip } = getPaginationParams(req.query);
     const { search, q, sortBy, sortAlphabetical } = req.query;
 
@@ -220,6 +227,13 @@ export const listDepartments = async (req, res, next) => {
 
 export const getDepartmentById = async (req, res, next) => {
   try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Super Admin has permission to view department details',
+      });
+    }
+
     const { id } = req.params;
     const department = await Department.findById(id).populate('createdBy', 'name email');
 

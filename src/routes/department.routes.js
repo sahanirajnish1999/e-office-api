@@ -14,13 +14,11 @@ const router = Router();
 // All department endpoints require authentication
 router.use(authenticateToken);
 
-// Super admin creates, updates, and deletes departments
+// All department endpoints are restricted strictly to Super Admin
 router.post('/', authorizeRoles('super_admin'), createDepartment);
 router.put('/:id', authorizeRoles('super_admin'), updateDepartment);
 router.delete('/:id', authorizeRoles('super_admin'), deleteDepartment);
-
-// All authenticated roles can list or view departments
-router.get('/', listDepartments);
-router.get('/:id', getDepartmentById);
+router.get('/', authorizeRoles('super_admin'), listDepartments);
+router.get('/:id', authorizeRoles('super_admin'), getDepartmentById);
 
 export default router;
