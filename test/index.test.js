@@ -26,7 +26,7 @@ import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mai
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment, getDepartmentById as getDeptById } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime, getUserDashboardSummary } from '../src/controllers/user.controller.js';
-import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical } from '../src/controllers/document.controller.js';
+import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical, archiveDocument, listArchivedDocuments } from '../src/controllers/document.controller.js';
 import { generateNextEmployeeId, createEmployee, listEmployees } from '../src/controllers/employee.controller.js';
 import { listReplicas } from '../src/controllers/document.replica.controller.js';
 import { getMyRequests, listAllRequests } from '../src/controllers/email.request.controller.js';
@@ -176,6 +176,9 @@ describe('Project Tests', () => {
     assert.ok(paths.includes('footerDetails'));
     assert.ok(paths.includes('isDeletedForOriginDept'));
     assert.ok(paths.includes('pageNumber'));
+    assert.ok(paths.includes('preservedDate'));
+    assert.ok(paths.includes('preservedBy'));
+    assert.ok(paths.includes('preservationNotes'));
     assert.strictEqual(paths.includes('originalName'), false);
     assert.strictEqual(paths.includes('storedFilename'), false);
     assert.strictEqual(paths.includes('filePath'), false);
@@ -2728,5 +2731,139 @@ describe('Project Tests', () => {
 
     DocumentFile.aggregate = origAggregate;
     assert.strictEqual(pageAgg.totalPages, 18);
+  });
+
+  it('should verify archiveDocument marks document as archived and records preservedDate and preservedBy', async () => {
+    const testDocId = new mongoose.Types.ObjectId();
+    const testUserId = new mongoose.Types.ObjectId();
+
+    const mockDoc = {
+      _id: testDocId,
+      title: 'Audit Report 2026',
+      fileNumber: 'MOR/AUD/2026/F-01',
+      createdBy: testUserId,
+      status: 'active',
+      preservedDate: null,
+      preservedBy: null,
+      preservationNotes: '',
+      async save() {
+        return this;
+      },
+    };
+
+    const origFindById = Document.findById;
+    const origLogCreate = DocumentLog.create;
+    Document.findById = async () => mockDoc;
+    DocumentLog.create = async () => ({});
+
+    let statusCode = null;
+    let responseData = null;
+
+    const req = {
+      params: { id: testDocId.toString() },
+      body: {
+        preservedDate: '2026-11-23',
+        preservationNotes: 'Preserved for 10-year official audit record retention',
+      },
+      user: { id: testUserId.toString(), role: 'department_admin', name: 'Admin User' },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await archiveDocument(req, res, () => {});
+
+    Document.findById = origFindById;
+    DocumentLog.create = origLogCreate;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(mockDoc.status, 'archived');
+    assert.ok(mockDoc.preservedDate instanceof Date);
+    assert.strictEqual(mockDoc.preservedBy.toString(), testUserId.toString());
+    assert.strictEqual(mockDoc.preservationNotes, 'Preserved for 10-year official audit record retention');
+  });
+
+  it('should verify listArchivedDocuments uses $facet aggregation and projects strictly the 7 specified fields', async () => {
+    let capturedPipeline = null;
+    const origAggregate = Document.aggregate;
+
+    Document.aggregate = async (pipeline) => {
+      capturedPipeline = pipeline;
+      return [
+        {
+          totalCount: [{ total: 1 }],
+          paginatedData: [
+            {
+              fileId: '650c1f1e1f1e1f1e1f1e1020',
+              fileTitle: 'Track Modernization Phase 2',
+              fileSubjectLine: 'Sanction of steel rails procurement',
+              departmentName: 'Civil Engineering',
+              fileNumber: 'MOR/CIVIL/2026/F-114',
+              filePagesNumber: 12,
+              attachedDocumentNumbers: 3,
+              preservedDate: new Date('2026-11-23T12:00:00.000Z'),
+            },
+          ],
+        },
+      ];
+    };
+
+    let statusCode = null;
+    let responseData = null;
+
+    const req = {
+      query: { page: '1', pageSize: '10', search: 'Track' },
+      user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+    };
+    const res = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    await listArchivedDocuments(req, res, () => {});
+
+    Document.aggregate = origAggregate;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+    assert.strictEqual(responseData.data.length, 1);
+
+    const doc = responseData.data[0];
+    assert.strictEqual(doc.fileTitle, 'Track Modernization Phase 2');
+    assert.strictEqual(doc.fileSubjectLine, 'Sanction of steel rails procurement');
+    assert.strictEqual(doc.departmentName, 'Civil Engineering');
+    assert.strictEqual(doc.fileNumber, 'MOR/CIVIL/2026/F-114');
+    assert.strictEqual(doc.filePagesNumber, 12);
+    assert.strictEqual(doc.attachedDocumentNumbers, 3);
+    assert.ok(doc.preservedDate);
+
+    // Verify pipeline stages
+    const matchStage = capturedPipeline.find((s) => s.$match);
+    assert.ok(matchStage, '$match stage must exist');
+    assert.strictEqual(matchStage.$match.$and[0].status, 'archived');
+
+    const facetStage = capturedPipeline.find((s) => s.$facet);
+    assert.ok(facetStage, '$facet stage must exist');
+    const projectStage = facetStage.$facet.paginatedData.find((s) => s.$project);
+    assert.ok(projectStage, '$project stage must exist');
+    assert.strictEqual(projectStage.$project._id, 0);
+    assert.strictEqual(projectStage.$project.fileTitle, '$title');
+    assert.strictEqual(projectStage.$project.fileSubjectLine, '$subject');
+    assert.strictEqual(projectStage.$project.fileNumber, '$fileNumber');
   });
 });

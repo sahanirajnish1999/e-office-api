@@ -1478,6 +1478,261 @@ export const withdrawFile = async (req, res, next) => {
 };
 
 /**
+ * 14.1 Archive & Preserve Document (Update Preserved Document)
+ * Admin / Creator
+ * PATCH /api/documents/:id/archive (alias: /api/documents/:id/preserve)
+ */
+export const archiveDocument = async (req, res, next) => {
+  try {
+    const documentId = req.params.id;
+    if (!isValidObjectId(documentId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid document ID format',
+      });
+    }
+
+    const document = req.document || (await Document.findById(documentId));
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document not found',
+      });
+    }
+
+    const currentUserId = req.user.id || req.user._id;
+    const isCreator = document.createdBy && document.createdBy.toString() === currentUserId.toString();
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isDeptAdmin =
+      req.user.role === 'department_admin' &&
+      document.departmentId &&
+      req.user.departmentId &&
+      document.departmentId.toString() === req.user.departmentId.toString();
+
+    if (!isCreator && !isSuperAdmin && !isDeptAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only the document creator, originating Department Admin, or Super Admin can archive this document',
+      });
+    }
+
+    const { preservedDate, preservationNotes, status } = req.body;
+
+    // Transition status to archived (or update preservation metadata)
+    document.status = status || 'archived';
+    document.preservedDate = preservedDate ? new Date(preservedDate) : (document.preservedDate || new Date());
+    document.preservedBy = currentUserId;
+    if (preservationNotes !== undefined) {
+      document.preservationNotes = (preservationNotes || '').trim();
+    }
+
+    await document.save();
+
+    await recordDocumentLog({
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
+      user: req.user,
+      action: 'DOCUMENT_ARCHIVED',
+      details: `Document '${document.title}' (File No: ${document.fileNumber || 'N/A'}) archived and preserved by ${req.user.name || req.user.email}${document.preservationNotes ? ` (Notes: ${document.preservationNotes})` : ''}`,
+      req,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Document successfully archived and marked as preserved',
+      data: document,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 14.2 List Archived & Preserved Documents (Paginated)
+ * GET /api/documents/archived (alias: /api/documents/preserved)
+ */
+export const listArchivedDocuments = async (req, res, next) => {
+  try {
+    const {
+      search,
+      text,
+      keyword,
+      subject,
+      departmentId,
+      dateFrom,
+      dateTo,
+      preservedDateFrom,
+      preservedDateTo,
+      preservedDate,
+      date,
+    } = req.query;
+
+    const andConditions = [{ status: 'archived' }];
+
+    // Role-based scoping
+    const userId = req.user.id || req.user._id;
+    const userDeptId = req.user.departmentId;
+
+    if (req.user.role === 'super_admin') {
+      if (departmentId && isValidObjectId(departmentId)) {
+        andConditions.push({ departmentId: new mongoose.Types.ObjectId(departmentId) });
+      } else if (departmentId) {
+        andConditions.push({ departmentId });
+      }
+    } else if (req.user.role === 'department_admin') {
+      const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+      const forwardedDocIds = await DocumentForward.distinct('documentId', {
+        targetDepartmentId: targetDeptObjId,
+        isDeletedForDept: false,
+      });
+
+      andConditions.push({
+        $or: [
+          { departmentId: targetDeptObjId, isDeletedForOriginDept: false },
+          { _id: { $in: forwardedDocIds } },
+          { createdBy: isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId },
+        ],
+      });
+    } else {
+      // Employee scoping
+      const userObjId = isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+      const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
+
+      const [userPermittedDocIds, forwardedDocIds] = await Promise.all([
+        DocumentPermission.distinct('documentId', { userId: userObjId }),
+        DocumentForward.distinct('documentId', {
+          targetDepartmentId: targetDeptObjId,
+          isDeletedForDept: false,
+        }),
+      ]);
+
+      andConditions.push({
+        $or: [
+          { departmentId: targetDeptObjId, isDeletedForOriginDept: false },
+          { _id: { $in: forwardedDocIds } },
+          { _id: { $in: userPermittedDocIds } },
+          { createdBy: userObjId },
+        ],
+      });
+    }
+
+    // Search filter across title, subject, and fileNumber
+    const searchTerm = (search || text || keyword || subject || '').trim();
+    if (searchTerm) {
+      andConditions.push({
+        $or: [
+          { title: { $regex: searchTerm, $options: 'i' } },
+          { subject: { $regex: searchTerm, $options: 'i' } },
+          { fileNumber: { $regex: searchTerm, $options: 'i' } },
+        ],
+      });
+    }
+
+    // Preserved Date filter
+    const rawSingleDate = (preservedDate || date || '').trim();
+    const rawDateFrom = (preservedDateFrom || dateFrom || '').trim();
+    const rawDateTo = (preservedDateTo || dateTo || '').trim();
+
+    if (rawSingleDate) {
+      const parsed = new Date(rawSingleDate);
+      if (!isNaN(parsed.getTime())) {
+        const utcStart = new Date(parsed);
+        utcStart.setUTCHours(0, 0, 0, 0);
+        const utcEnd = new Date(parsed);
+        utcEnd.setUTCHours(23, 59, 59, 999);
+
+        const locStart = new Date(parsed);
+        locStart.setHours(0, 0, 0, 0);
+        const locEnd = new Date(parsed);
+        locEnd.setHours(23, 59, 59, 999);
+
+        const minStart = new Date(Math.min(utcStart.getTime(), locStart.getTime()));
+        const maxEnd = new Date(Math.max(utcEnd.getTime(), locEnd.getTime()));
+
+        andConditions.push({
+          preservedDate: { $gte: minStart, $lte: maxEnd },
+        });
+      }
+    } else if (rawDateFrom || rawDateTo) {
+      const dateCond = {};
+      if (rawDateFrom) dateCond.$gte = new Date(rawDateFrom);
+      if (rawDateTo) dateCond.$lte = new Date(rawDateTo);
+      andConditions.push({ preservedDate: dateCond });
+    }
+
+    const finalMatch = andConditions.length > 0 ? { $and: andConditions } : {};
+    const { page, pageSize, skip } = getPaginationParams(req.query);
+
+    // Single-roundtrip aggregation pipeline with $facet & $lookup
+    const [result] = await Document.aggregate([
+      { $match: finalMatch },
+      {
+        $facet: {
+          totalCount: [{ $count: 'total' }],
+          paginatedData: [
+            { $sort: { preservedDate: -1, createdAt: -1 } },
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'departments',
+                localField: 'departmentId',
+                foreignField: '_id',
+                as: 'department',
+                pipeline: [{ $project: { _id: 1, name: 1, code: 1 } }],
+              },
+            },
+            { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+            {
+              $lookup: {
+                from: 'documentfiles',
+                localField: '_id',
+                foreignField: 'documentId',
+                as: 'attachedFiles',
+                pipeline: [{ $project: { _id: 1, pageNumber: 1 } }],
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                fileId: '$_id',
+                fileTitle: '$title',
+                fileSubjectLine: '$subject',
+                departmentName: { $ifNull: ['$department.name', ''] },
+                fileNumber: '$fileNumber',
+                filePagesNumber: {
+                  $cond: {
+                    if: { $gt: [{ $size: '$attachedFiles' }, 0] },
+                    then: { $sum: '$attachedFiles.pageNumber' },
+                    else: { $ifNull: ['$pageNumber', 0] },
+                  },
+                },
+                attachedDocumentNumbers: { $size: '$attachedFiles' },
+                preservedDate: '$preservedDate',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const total = result?.totalCount?.[0]?.total || 0;
+    const documents = result?.paginatedData || [];
+
+    res.status(200).json(
+      formatPaginatedResponse({
+        total,
+        page,
+        pageSize,
+        data: documents,
+      })
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * 15. Employee Self-Delete (Remove Access from Personal View)
  */
 export const employeeSelfDelete = async (req, res, next) => {

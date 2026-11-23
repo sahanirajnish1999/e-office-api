@@ -127,6 +127,24 @@ const documentSchema = new mongoose.Schema(
     isDeletedForOriginDept: { type: Boolean, default: false },
     originDeptDeletedAt: Date,
     originDeptDeletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+    // Retention & Preservation (Archival Tracking)
+    preservedDate: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    preservedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+    preservationNotes: {
+      type: String,
+      trim: true,
+      default: '',
+    },
   },
   {
     timestamps: true,

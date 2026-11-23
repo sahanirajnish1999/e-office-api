@@ -21,6 +21,8 @@ import {
   createDocumentLog,
   getMyDocumentCounts,
   searchAndListDocumentsAlphabetical,
+  archiveDocument,
+  listArchivedDocuments,
 } from '../controllers/document.controller.js';
 import {
   createReplica,
@@ -83,6 +85,8 @@ router.get('/counts', checkPermission('canViewMyFiles'), getMyDocumentCounts);
 router.get('/dashboard-summary', getUserDashboardSummary);
 router.get('/alphabetical', checkPermission('canSearchFiles'), searchAndListDocumentsAlphabetical);
 router.get('/alphabetical-index', checkPermission('canSearchFiles'), searchAndListDocumentsAlphabetical);
+router.get('/archived', checkPermission('canViewMyFiles'), listArchivedDocuments);
+router.get('/preserved', checkPermission('canViewMyFiles'), listArchivedDocuments);
 router.get('/:id', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentById);
 router.get('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentLogs);
 router.post('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), createDocumentLog);
@@ -190,8 +194,10 @@ router.patch(
   reviewReplica
 );
 
-// 7. Deletions & Withdrawals
+// 7. Deletions, Retention & Withdrawals
 router.patch('/:id/withdraw', checkPermission('canWithdrawFile'), checkDocumentAccess('canView'), withdrawFile);
+router.patch('/:id/archive', checkDocumentAccess('canView'), archiveDocument);
+router.patch('/:id/preserve', checkDocumentAccess('canView'), archiveDocument);
 router.delete('/:id/my-access', checkPermission('canDeletePartial'), checkDocumentAccess('canView'), employeeSelfDelete);
 router.delete(
   '/:id/department',
