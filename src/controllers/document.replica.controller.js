@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { DocumentReplica } from '../models/document.replica.model.js';
 import { Document } from '../models/document.model.js';
+import { DocumentFile } from '../models/document.file.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { moveToDocumentFolder } from '../utils/file.util.js';
@@ -185,14 +186,31 @@ export const reviewReplica = async (req, res, next) => {
 
     // Optionally apply revised file to original document if approved
     if (status === 'approved' && applyChangesToOriginal && replica.revisedFilePath) {
-      const document = await Document.findById(replica.parentDocumentId);
-      if (document) {
-        document.originalName = replica.revisedOriginalName || document.originalName;
-        document.storedFilename = replica.revisedStoredFilename || document.storedFilename;
-        document.filePath = replica.revisedFilePath;
-        document.fileUrl = replica.revisedFileUrl;
-        await document.save();
-      }
+      await DocumentFile.create({
+        documentId: replica.parentDocumentId,
+        uploadUserId: replica.suggestedBy,
+        uploadTime: new Date(),
+        originalName: replica.revisedOriginalName || 'Revised File',
+        storedFilename: replica.revisedStoredFilename || '',
+        filePath: replica.revisedFilePath,
+        fileUrl: replica.revisedFileUrl,
+        pageNumber: 1,
+        fileSummary: `Approved revised file from replica: ${replica.title}`,
+        status: 'approve',
+        approvedBy: req.user.id,
+        approvedAt: new Date(),
+      }).catch((err) => {
+        console.warn('Warning creating DocumentFile from approved replica:', err.message);
+      });
+
+      // Update parent document total pages
+      const [pageAgg] = await DocumentFile.aggregate([
+        { $match: { documentId: replica.parentDocumentId } },
+        { $group: { _id: null, totalPages: { $sum: '$pageNumber' } } },
+      ]);
+      await Document.findByIdAndUpdate(replica.parentDocumentId, {
+        pageNumber: pageAgg?.totalPages || 1,
+      });
     }
 
     await recordDocumentLog({

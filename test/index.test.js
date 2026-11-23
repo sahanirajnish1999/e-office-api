@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
 import { generateToken, verifyToken } from '../src/utils/token.util.js';
 import { generateRandomToken, hashToken } from '../src/utils/crypto.util.js';
 import { User } from '../src/models/user.model.js';
@@ -175,6 +176,12 @@ describe('Project Tests', () => {
     assert.ok(paths.includes('footerDetails'));
     assert.ok(paths.includes('isDeletedForOriginDept'));
     assert.ok(paths.includes('pageNumber'));
+    assert.strictEqual(paths.includes('originalName'), false);
+    assert.strictEqual(paths.includes('storedFilename'), false);
+    assert.strictEqual(paths.includes('filePath'), false);
+    assert.strictEqual(paths.includes('fileUrl'), false);
+    assert.strictEqual(paths.includes('mimeType'), false);
+    assert.strictEqual(paths.includes('fileSize'), false);
     assert.strictEqual(paths.includes('stickies'), false);
     assert.strictEqual(paths.includes('remarks'), false);
   });
@@ -2689,5 +2696,37 @@ describe('Project Tests', () => {
     // 3. Verify access user name condition
     const accessCond = andArray.find((c) => c.$or && c.$or.some((o) => o._id && o._id.$in));
     assert.ok(accessCond, 'Access user name filter must match permitted docs and createdBy');
+  });
+
+  it('should verify document model separates file storage into DocumentFile and sums total pages', async () => {
+    // 1. Verify Document model does not carry physical file properties
+    const docPaths = Object.keys(Document.schema.paths);
+    ['originalName', 'storedFilename', 'filePath', 'fileUrl', 'mimeType', 'fileSize'].forEach((field) => {
+      assert.strictEqual(docPaths.includes(field), false, `Document must not contain ${field}`);
+    });
+    assert.ok(docPaths.includes('pageNumber'), 'Document must retain pageNumber for total pages');
+
+    // 2. Verify DocumentFile schema retains physical file attributes
+    const filePaths = Object.keys(DocumentFile.schema.paths);
+    ['originalName', 'storedFilename', 'filePath', 'fileUrl', 'mimeType', 'fileSize', 'pageNumber'].forEach((field) => {
+      assert.ok(filePaths.includes(field), `DocumentFile must contain ${field}`);
+    });
+
+    // 3. Mock aggregation pipeline for total pages calculation
+    const testDocId = new mongoose.Types.ObjectId();
+    const origAggregate = DocumentFile.aggregate;
+    DocumentFile.aggregate = async (pipeline) => {
+      assert.strictEqual(pipeline[0].$match.documentId.toString(), testDocId.toString());
+      assert.strictEqual(pipeline[1].$group.totalPages.$sum, '$pageNumber');
+      return [{ _id: null, totalPages: 18 }];
+    };
+
+    const [pageAgg] = await DocumentFile.aggregate([
+      { $match: { documentId: testDocId } },
+      { $group: { _id: null, totalPages: { $sum: '$pageNumber' } } },
+    ]);
+
+    DocumentFile.aggregate = origAggregate;
+    assert.strictEqual(pageAgg.totalPages, 18);
   });
 });

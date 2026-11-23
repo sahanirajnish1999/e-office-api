@@ -60,6 +60,14 @@ export const uploadDocumentFile = async (req, res, next) => {
       status: 'pending',
     });
 
+    // Re-sum total pages from DocumentFile for this document and update Document
+    const [pageAgg] = await DocumentFile.aggregate([
+      { $match: { documentId: document._id } },
+      { $group: { _id: null, totalPages: { $sum: '$pageNumber' } } },
+    ]);
+    const totalDocPages = pageAgg?.totalPages || file.pageNumber || 0;
+    await Document.findByIdAndUpdate(document._id, { pageNumber: totalDocPages });
+
     await recordDocumentLog({
       documentId: document._id,
       fileNumber: document.fileNumber,
@@ -263,6 +271,14 @@ export const reviewDocumentFile = async (req, res, next) => {
     file.rejectionReason = status === 'reject' ? (rejectionReason || '').trim() : '';
     await file.save();
 
+    // Re-sum total pages from DocumentFile for this document and update Document
+    const [pageAgg] = await DocumentFile.aggregate([
+      { $match: { documentId: document._id } },
+      { $group: { _id: null, totalPages: { $sum: '$pageNumber' } } },
+    ]);
+    const totalDocPages = pageAgg?.totalPages || file.pageNumber || 0;
+    await Document.findByIdAndUpdate(document._id, { pageNumber: totalDocPages });
+
     await recordDocumentLog({
       documentId: document._id,
       fileNumber: document.fileNumber,
@@ -334,6 +350,14 @@ export const deleteDocumentFile = async (req, res, next) => {
     }
 
     await DocumentFile.findByIdAndDelete(file._id);
+
+    // Re-sum total pages from DocumentFile for this document and update Document
+    const [pageAgg] = await DocumentFile.aggregate([
+      { $match: { documentId: document._id } },
+      { $group: { _id: null, totalPages: { $sum: '$pageNumber' } } },
+    ]);
+    const totalDocPages = pageAgg?.totalPages || 0;
+    await Document.findByIdAndUpdate(document._id, { pageNumber: totalDocPages });
 
     await recordDocumentLog({
       documentId: document._id,

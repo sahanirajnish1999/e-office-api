@@ -4,4 +4,3 @@ node_modules/
 .DS_Store
 uploads/**
 package-lock.json
-postman_collection.json

@@ -45,14 +45,12 @@ const documentSchema = new mongoose.Schema(
       },
     ],
 
-    // 2. Physical File Information (from Multer - Optional)
-    originalName: { type: String, default: '' },
-    storedFilename: { type: String, default: '' },
-    filePath: { type: String, default: '' },
-    fileUrl: { type: String, default: '' },
-    mimeType: { type: String, default: '' },
-    fileSize: { type: Number, default: 0 },
-    pageNumber: { type: Number, default: 1 },
+    // 2. Document Page Count (Total sum of all attached DocumentFile page numbers)
+    pageNumber: {
+      type: Number,
+      default: 0,
+      min: [0, 'Total page count cannot be negative'],
+    },
 
     // 3. Header, Letterhead & Logo Customization
     logoFileName: {

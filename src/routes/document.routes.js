@@ -65,6 +65,7 @@ router.post(
   authorizeRoles('super_admin', 'department_admin'),
   checkPermission('canUploadDocuments'),
   upload.fields([
+    { name: 'files' },
     { name: 'file', maxCount: 1 },
     { name: 'logo', maxCount: 1 },
   ]),

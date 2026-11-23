@@ -25,7 +25,15 @@ import { generateNextFileNumber } from '../utils/document.util.js';
  */
 export const createDocument = async (req, res, next) => {
   try {
-    const mainFile = req.files?.file?.[0] || req.file;
+    const uploadedFiles = [];
+    if (req.files?.files && Array.isArray(req.files.files)) {
+      uploadedFiles.push(...req.files.files);
+    }
+    if (req.files?.file && Array.isArray(req.files.file)) {
+      uploadedFiles.push(...req.files.file);
+    } else if (req.file) {
+      uploadedFiles.push(req.file);
+    }
     const logoFile = req.files?.logo?.[0];
 
     const {
@@ -158,22 +166,46 @@ export const createDocument = async (req, res, next) => {
     // Pre-generate document ObjectId to organize files in dedicated folders
     const docId = new mongoose.Types.ObjectId();
 
-    // Organize main file in uploads/uploaded-files/<docId>/files/ if provided
-    let finalFilePath = '';
-    let finalStoredFilename = '';
-    let fileUrl = '';
-    let originalName = '';
-    let mimeType = '';
-    let fileSize = 0;
+    // Organize uploaded file(s) in uploads/uploaded-files/<docId>/files/ and store in DocumentFile
+    const createdDocumentFiles = [];
+    let totalDocPages = 0;
 
-    if (mainFile) {
-      const movedMain = moveToDocumentFolder(mainFile.path, docId, 'files');
-      finalFilePath = movedMain ? movedMain.destPath : mainFile.path;
-      finalStoredFilename = movedMain ? movedMain.filename : mainFile.filename;
-      fileUrl = movedMain ? movedMain.fileUrl : `/uploads/${mainFile.filename}`;
-      originalName = mainFile.originalname || '';
-      mimeType = mainFile.mimetype || '';
-      fileSize = mainFile.size || 0;
+    for (let i = 0; i < uploadedFiles.length; i++) {
+      const uFile = uploadedFiles[i];
+      const moved = moveToDocumentFolder(uFile.path, docId, 'files');
+      const finalStoredFilename = moved ? moved.filename : uFile.filename;
+      const finalFilePath = moved ? moved.destPath : uFile.path;
+      const finalFileUrl = moved ? moved.fileUrl : `/uploads/${uFile.filename}`;
+      const originalName = uFile.originalname || '';
+      const mimeType = uFile.mimetype || '';
+      const fileSize = uFile.size || 0;
+      // Single file takes finalPageNumber; multiple files default to 1 page each unless specified
+      const filePages = uploadedFiles.length === 1 ? finalPageNumber : 1;
+      totalDocPages += filePages;
+
+      const docFileRecord = await DocumentFile.create({
+        documentId: docId,
+        uploadUserId: req.user.id || req.user._id,
+        uploadTime: new Date(),
+        originalName,
+        storedFilename: finalStoredFilename,
+        filePath: finalFilePath,
+        fileUrl: finalFileUrl,
+        mimeType,
+        fileSize,
+        pageNumber: filePages,
+        fileSummary: (req.body.fileSummary || '').trim(),
+        status: 'approve',
+        approvedBy: req.user.id || req.user._id,
+        approvedAt: new Date(),
+      }).catch((fileErr) => {
+        console.warn('Warning creating initial DocumentFile record:', fileErr.message);
+        return null;
+      });
+
+      if (docFileRecord) {
+        createdDocumentFiles.push(docFileRecord);
+      }
     }
 
     // Organize logo in uploads/uploaded-files/<docId>/logo/ if uploaded
@@ -188,7 +220,7 @@ export const createDocument = async (req, res, next) => {
       logoOriginalName = logoFile.originalname;
     }
 
-    // Create Main Document (Stays ultra-lightweight: ~1-2 KB)
+    // Create Main Document (Stays ultra-lightweight: ~1-2 KB, all file details kept in DocumentFile)
     const document = await Document.create({
       _id: docId,
       fileNumber: finalFileNumber,
@@ -198,13 +230,7 @@ export const createDocument = async (req, res, next) => {
       accessControl: chosenAccess,
       registrationDate: new Date(finalRegistrationDate),
       highlights: parsedHighlights,
-      originalName,
-      storedFilename: finalStoredFilename,
-      filePath: finalFilePath,
-      fileUrl,
-      mimeType,
-      fileSize,
-      pageNumber: finalPageNumber,
+      pageNumber: totalDocPages,
       logoFileName: finalLogoFileName,
       logoUrl,
       logoOriginalName,
@@ -215,28 +241,6 @@ export const createDocument = async (req, res, next) => {
       departmentId: targetDeptId,
       createdBy: req.user.id,
     });
-
-    // If a physical file was attached at creation, create an initial DocumentFile record
-    if (mainFile) {
-      await DocumentFile.create({
-        documentId: document._id,
-        uploadUserId: req.user.id || req.user._id,
-        uploadTime: new Date(),
-        originalName,
-        storedFilename: finalStoredFilename,
-        filePath: finalFilePath,
-        fileUrl,
-        mimeType,
-        fileSize,
-        pageNumber: finalPageNumber,
-        fileSummary: (req.body.fileSummary || '').trim(),
-        status: 'approve',
-        approvedBy: req.user.id || req.user._id,
-        approvedAt: new Date(),
-      }).catch((fileErr) => {
-        console.warn('Warning creating initial DocumentFile record:', fileErr.message);
-      });
-    }
 
     // Automatically grant creator full owner file access permissions
     const permissionDocs = [
@@ -300,10 +304,13 @@ export const createDocument = async (req, res, next) => {
       req,
     });
 
+    const responseData = document.toObject ? document.toObject() : { ...document._doc };
+    responseData.files = createdDocumentFiles;
+
     res.status(201).json({
       success: true,
       message: 'Document uploaded and created successfully',
-      data: document,
+      data: responseData,
     });
   } catch (error) {
     next(error);
@@ -783,6 +790,13 @@ export const getDocumentById = async (req, res, next) => {
           filePriority: '$priority',
           fileDate: '$registrationDate',
           targetAudience: '$accessControl',
+          pageNumber: {
+            $cond: {
+              if: { $gt: [{ $size: '$files' }, 0] },
+              then: { $sum: '$files.pageNumber' },
+              else: { $ifNull: ['$pageNumber', 0] },
+            },
+          },
         },
       },
       {
@@ -1596,6 +1610,9 @@ export const permanentDelete = async (req, res, next) => {
 
     // Clean up all forwards in DocumentForward collection
     await DocumentForward.deleteMany({ documentId: id });
+
+    // Clean up all attached files in DocumentFile collection
+    await DocumentFile.deleteMany({ documentId: id });
 
     // Log the permanent deletion action before removing the document
     await recordDocumentLog({
