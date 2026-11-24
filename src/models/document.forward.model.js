@@ -51,6 +51,83 @@ const documentForwardSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    status: {
+      type: String,
+      enum: ['draft', 'sent', 'resend', 'receive', 'recalled'],
+      default: 'sent',
+      index: true,
+    },
+    sentAt: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+    resendCount: {
+      type: Number,
+      default: 0,
+    },
+    lastResentAt: {
+      type: Date,
+      default: null,
+    },
+    resendRemarks: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    recalledAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    recalledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    recallReason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    receivedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+    receivedTime: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    isPhysicalFileReceived: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    physicalFileReceivedTime: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    allowedUsers: [
+      {
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        permissions: {
+          type: Object,
+          default: () => ({
+            canView: true,
+            canRemark: true,
+            canSuggestChange: true,
+            canDownload: true,
+          }),
+        },
+      },
+    ],
     isDeletedForDept: {
       type: Boolean,
       default: false,
@@ -80,6 +157,9 @@ documentForwardSchema.index({ targetUserId: 1, isDeletedForDept: 1, forwardedAt:
 documentForwardSchema.index({ targetDepartmentId: 1, isDeletedForDept: 1, forwardedAt: -1 });
 documentForwardSchema.index({ documentId: 1, targetDepartmentId: 1, isDeletedForDept: 1 });
 documentForwardSchema.index({ documentId: 1, targetUserId: 1, isDeletedForDept: 1 });
+documentForwardSchema.index({ targetUserId: 1, status: 1, isDeletedForDept: 1 });
+documentForwardSchema.index({ targetDepartmentId: 1, status: 1, isDeletedForDept: 1 });
+documentForwardSchema.index({ documentId: 1, status: 1, isDeletedForDept: 1 });
 
 export const DocumentForward = mongoose.model('DocumentForward', documentForwardSchema);
 export default DocumentForward;

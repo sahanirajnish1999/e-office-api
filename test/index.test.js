@@ -26,7 +26,7 @@ import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mai
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment, getDepartmentById as getDeptById } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime, getUserDashboardSummary } from '../src/controllers/user.controller.js';
-import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical, archiveDocument, listArchivedDocuments, forwardDocument } from '../src/controllers/document.controller.js';
+import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical, archiveDocument, listArchivedDocuments, forwardDocument, sendDraftForward, resendForward, recallForward, receiveForward, getPendingReceiptForwards } from '../src/controllers/document.controller.js';
 import { generateNextEmployeeId, createEmployee, listEmployees } from '../src/controllers/employee.controller.js';
 import { listReplicas } from '../src/controllers/document.replica.controller.js';
 import { getMyRequests, listAllRequests } from '../src/controllers/email.request.controller.js';
@@ -243,7 +243,7 @@ describe('Project Tests', () => {
     assert.strictEqual(DocumentSticky.schema.path('isApproved').defaultValue, false);
   });
 
-  it('should validate DocumentForward model schema definition', () => {
+  it('should validate DocumentForward model schema definition and lifecycle fields', () => {
     const fwdPaths = Object.keys(DocumentForward.schema.paths);
     assert.ok(fwdPaths.includes('documentId'));
     assert.ok(fwdPaths.includes('fromDepartmentId'));
@@ -254,6 +254,20 @@ describe('Project Tests', () => {
     assert.ok(fwdPaths.includes('accessControl'));
     assert.ok(fwdPaths.includes('forwardedAt'));
     assert.ok(fwdPaths.includes('isDeletedForDept'));
+    assert.ok(fwdPaths.includes('status'));
+    assert.ok(fwdPaths.includes('sentAt'));
+    assert.ok(fwdPaths.includes('resendCount'));
+    assert.ok(fwdPaths.includes('recalledAt'));
+    assert.ok(fwdPaths.includes('recalledBy'));
+    assert.ok(fwdPaths.includes('recallReason'));
+    assert.ok(fwdPaths.includes('receivedBy'));
+    assert.ok(fwdPaths.includes('receivedTime'));
+    assert.ok(fwdPaths.includes('isPhysicalFileReceived'));
+    assert.ok(fwdPaths.includes('physicalFileReceivedTime'));
+
+    const statusEnum = DocumentForward.schema.path('status').enumValues;
+    assert.deepStrictEqual(statusEnum, ['draft', 'sent', 'resend', 'receive', 'recalled']);
+    assert.strictEqual(DocumentForward.schema.path('status').defaultValue, 'sent');
   });
 
   it('should validate DocumentReplica and DocumentLog model schema definitions', () => {
@@ -3614,9 +3628,8 @@ describe('Project Tests', () => {
     assert.strictEqual(responseData.success, true);
     assert.strictEqual(createdForwardDoc.targetUserId, '650c1f1e1f1e1f1e1f1e4002');
     assert.strictEqual(createdForwardDoc.targetDepartmentId.toString(), '650c1f1e1f1e1f1e1f1e3002');
-    assert.ok(grantedPerm, 'Permission must be auto-granted');
-    assert.strictEqual(grantedPerm.userId, '650c1f1e1f1e1f1e1f1e4002');
-    assert.strictEqual(grantedPerm.permissions.canView, true);
+    assert.strictEqual(createdForwardDoc.status, 'sent');
+    assert.strictEqual(grantedPerm, null, 'Permission must NOT be granted before receive');
 
     // 3. Forwarding with only targetDepartmentId
     const origDeptFindById = Department.findById;
@@ -3651,5 +3664,279 @@ describe('Project Tests', () => {
     DocumentForward.findById = origFwdFindById;
     DocumentPermission.findOneAndUpdate = origPermFindOneAndUpdate;
     DocumentLog.create = origLogCreate;
+  });
+
+  it('should verify forward lifecycle: draft (no log), send, resend, recall, receive (with receivedTime) and no permissions until received', async () => {
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    const mockDocument = {
+      _id: '650c1f1e1f1e1f1e1f1e5002',
+      title: 'Solar Power Plant Proposal',
+      departmentId: '650c1f1e1f1e1f1e1f1e3001',
+      fileNumber: 'MOR/ELEC/2026/F-501',
+    };
+
+    const origDocFindById = Document.findById;
+    const origFwdFindOne = DocumentForward.findOne;
+    const origFwdCreate = DocumentForward.create;
+    const origFwdFindById = DocumentForward.findById;
+    const origUserFindById = User.findById;
+    const origDeptFindById = Department.findById;
+    const origPermFindOneAndUpdate = DocumentPermission.findOneAndUpdate;
+    const origLogCreate = DocumentLog.create;
+    const origWorkflowCreate = DocumentWorkflowStatus.create;
+
+    let capturedLogs = [];
+    DocumentLog.create = async (log) => {
+      capturedLogs.push(log);
+      return log;
+    };
+
+    let capturedPerms = [];
+    DocumentPermission.findOneAndUpdate = async (filter, update) => {
+      capturedPerms.push(update.$set);
+      return update.$set;
+    };
+
+    let capturedWorkflowStatuses = [];
+    DocumentWorkflowStatus.create = async (statusDoc) => {
+      capturedWorkflowStatuses.push(statusDoc);
+      return { _id: '650c1f1e1f1e1f1e1f1e9001', ...statusDoc };
+    };
+
+    User.findById = () => ({
+      populate: async () => ({
+        _id: '650c1f1e1f1e1f1e1f1e4003',
+        name: 'Technical Officer',
+        email: 'tech@gov.in',
+        departmentId: { _id: '650c1f1e1f1e1f1e1f1e3005', name: 'Technical', code: 'TECH' },
+      }),
+    });
+
+    Department.findById = async (id) => ({
+      _id: id,
+      name: 'Technical',
+      code: 'TECH',
+    });
+
+    Document.findById = async () => mockDocument;
+
+    // --- STEP 1: Draft Forward ---
+    // Must NOT create DocumentPermission, must NOT create DocumentLog (no draft log), must NOT create DocumentWorkflowStatus
+    let storedForward = null;
+    DocumentForward.create = async (doc) => {
+      storedForward = {
+        _id: '650c1f1e1f1e1f1e1f1e8001',
+        ...doc,
+        save: async function () {
+          return this;
+        },
+      };
+      return storedForward;
+    };
+
+    DocumentForward.findOne = async () => null;
+    DocumentForward.findById = () => ({
+      populate() {
+        return {
+          populate() {
+            return {
+              populate: async () => storedForward,
+            };
+          },
+        };
+      },
+    });
+
+    await forwardDocument(
+      {
+        body: {
+          targetUserId: '650c1f1e1f1e1f1e1f1e4003',
+          priority: 'urgent',
+          remarks: 'Draft forward for solar plant',
+          status: 'draft',
+        },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'department_admin', name: 'Civil Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(storedForward.status, 'draft');
+    assert.strictEqual(capturedPerms.length, 0, 'No permissions should be granted for draft');
+    assert.strictEqual(capturedLogs.length, 0, 'No draft log should be created');
+    assert.strictEqual(capturedWorkflowStatuses.length, 0, 'No workflow status should be created for draft');
+
+    // --- STEP 2: Dispatch Draft Forward (Send) ---
+    DocumentForward.findOne = async () => storedForward;
+    await sendDraftForward(
+      {
+        params: { id: mockDocument._id, forwardId: storedForward._id },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'department_admin', name: 'Civil Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(storedForward.status, 'sent');
+    assert.ok(storedForward.sentAt instanceof Date, 'sentAt must be recorded');
+    assert.strictEqual(capturedPerms.length, 0, 'Still no permissions granted before receive');
+    assert.strictEqual(capturedLogs.length, 1, 'File Forwarded log must be created on send');
+    assert.strictEqual(capturedLogs[0].action, 'File Forwarded');
+    assert.strictEqual(capturedWorkflowStatuses.length, 0, 'Still no workflow status before receive');
+
+    // --- STEP 3: Resend Forward ---
+    await resendForward(
+      {
+        params: { id: mockDocument._id, forwardId: storedForward._id },
+        body: { remarks: 'Gentle reminder to review urgently', priority: 'immediate' },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'department_admin', name: 'Civil Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(storedForward.status, 'resend');
+    assert.strictEqual(storedForward.resendCount, 1);
+    assert.strictEqual(storedForward.priority, 'immediate');
+    assert.strictEqual(capturedLogs.length, 2, 'File Resent log must be created');
+    assert.strictEqual(capturedLogs[1].action, 'File Resent');
+    assert.strictEqual(capturedWorkflowStatuses.length, 0, 'Still no workflow status on resend');
+
+    // --- STEP 4: Recall Forward ---
+    await recallForward(
+      {
+        params: { id: mockDocument._id, forwardId: storedForward._id },
+        body: { reason: 'Incorrect estimate sheet attached' },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'department_admin', name: 'Civil Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(storedForward.status, 'recalled');
+    assert.ok(storedForward.recalledAt instanceof Date);
+    assert.strictEqual(storedForward.recallReason, 'Incorrect estimate sheet attached');
+    assert.strictEqual(capturedLogs.length, 3, 'File Recalled log must be created');
+    assert.strictEqual(capturedLogs[2].action, 'File Recalled');
+
+    // --- STEP 5: Cannot Receive a Recalled Forward ---
+    await receiveForward(
+      {
+        params: { id: mockDocument._id, forwardId: storedForward._id },
+        body: {},
+        user: { id: '650c1f1e1f1e1f1e1f1e4003', role: 'employee', name: 'Technical Officer' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseData.message.includes('Cannot receive: this document forward was recalled'));
+
+    // --- STEP 6: Active Forward Received by Recipient ---
+    // Simulate active in-transit forward
+    storedForward.status = 'sent';
+    storedForward.recalledAt = null;
+
+    DocumentForward.findById = () => ({
+      populate() {
+        return {
+          populate() {
+            return {
+              populate() {
+                return {
+                  populate: async () => storedForward,
+                };
+              },
+            };
+          },
+        };
+      },
+    });
+
+    await receiveForward(
+      {
+        params: { id: mockDocument._id, forwardId: storedForward._id },
+        body: {
+          remarks: 'Received and file accepted for inspection',
+          isPhysicalFileReceived: true,
+        },
+        user: {
+          id: '650c1f1e1f1e1f1e1f1e4003',
+          role: 'employee',
+          name: 'Technical Officer',
+          departmentId: '650c1f1e1f1e1f1e1f1e3005',
+        },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(storedForward.status, 'receive');
+    assert.ok(storedForward.receivedTime instanceof Date, 'receivedTime must be set');
+    assert.strictEqual(storedForward.receivedBy, '650c1f1e1f1e1f1e1f1e4003');
+    assert.strictEqual(storedForward.isPhysicalFileReceived, true);
+    assert.ok(storedForward.physicalFileReceivedTime instanceof Date);
+
+    // Permission MUST be granted now
+    assert.strictEqual(capturedPerms.length, 1, 'Permission must be granted upon receive');
+    assert.strictEqual(capturedPerms[0].userId, '650c1f1e1f1e1f1e1f1e4003');
+    assert.strictEqual(capturedPerms[0].permissions.canView, true);
+
+    // Workflow status MUST be created now
+    assert.strictEqual(capturedWorkflowStatuses.length, 1, 'DocumentWorkflowStatus created on receive');
+    assert.strictEqual(capturedWorkflowStatuses[0].status, 'receive');
+    assert.strictEqual(capturedWorkflowStatuses[0].isPhysicalFileReceived, true);
+
+    // DocumentLog MUST record 'File Received'
+    assert.strictEqual(capturedLogs.length, 4);
+    assert.strictEqual(capturedLogs[3].action, 'File Received');
+
+    // --- STEP 7: Cannot Recall after Receive ---
+    await recallForward(
+      {
+        params: { id: mockDocument._id, forwardId: storedForward._id },
+        body: { reason: 'Try to recall after receive' },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'department_admin', name: 'Civil Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseData.message.includes('Cannot recall a file that has already been received'));
+
+    // Restore original stubs
+    Document.findById = origDocFindById;
+    DocumentForward.findOne = origFwdFindOne;
+    DocumentForward.create = origFwdCreate;
+    DocumentForward.findById = origFwdFindById;
+    User.findById = origUserFindById;
+    Department.findById = origDeptFindById;
+    DocumentPermission.findOneAndUpdate = origPermFindOneAndUpdate;
+    DocumentLog.create = origLogCreate;
+    DocumentWorkflowStatus.create = origWorkflowCreate;
   });
 });

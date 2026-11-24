@@ -8,6 +8,11 @@ import {
   grantDocumentPermissions,
   revokeDocumentPermission,
   forwardDocument,
+  sendDraftForward,
+  resendForward,
+  recallForward,
+  receiveForward,
+  getPendingReceiptForwards,
   updateForwardedPermissions,
   addSticky,
   addNoting,
@@ -87,6 +92,7 @@ router.get('/alphabetical', checkPermission('canSearchFiles'), searchAndListDocu
 router.get('/alphabetical-index', checkPermission('canSearchFiles'), searchAndListDocumentsAlphabetical);
 router.get('/archived', checkPermission('canViewMyFiles'), listArchivedDocuments);
 router.get('/preserved', checkPermission('canViewMyFiles'), listArchivedDocuments);
+router.get('/forward/pending-receipt', getPendingReceiptForwards);
 router.get('/:id', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentById);
 router.get('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentLogs);
 router.post('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), createDocumentLog);
@@ -117,12 +123,34 @@ router.delete(
   revokeDocumentPermission
 );
 
-// 4. Department Forwarding
+// 4. Department / User Forwarding & Custody Lifecycle
 router.post(
   '/:id/forward',
   authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   forwardDocument
+);
+router.post(
+  '/:id/forward/:forwardId/send',
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
+  checkDocumentAccess('canView'),
+  sendDraftForward
+);
+router.post(
+  '/:id/forward/:forwardId/resend',
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
+  checkDocumentAccess('canView'),
+  resendForward
+);
+router.post(
+  '/:id/forward/:forwardId/recall',
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
+  checkDocumentAccess('canView'),
+  recallForward
+);
+router.post(
+  '/:id/forward/:forwardId/receive',
+  receiveForward
 );
 router.patch(
   '/:id/forwarded-permissions/:departmentId',

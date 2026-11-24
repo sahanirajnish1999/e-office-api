@@ -13,6 +13,7 @@ import { DocumentFile } from '../models/document.file.model.js';
 import { DocumentReplica } from '../models/document.replica.model.js';
 import { VirtualStickyNote } from '../models/virtual.sticky.model.js';
 import { User } from '../models/user.model.js';
+import { DocumentWorkflowStatus } from '../models/document.workflow.status.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../utils/file.util.js';
@@ -1077,7 +1078,8 @@ export const revokeDocumentPermission = async (req, res, next) => {
 };
 
 /**
- * 8. Forward Document to Another Department
+ * 8. Forward Document to Another Department / Officer
+ * Supports multi-stage forward: draft | sent
  */
 export const forwardDocument = async (req, res, next) => {
   try {
@@ -1089,6 +1091,7 @@ export const forwardDocument = async (req, res, next) => {
       targetAudience,
       remarks,
       allowedUsers,
+      status: requestedStatus,
     } = req.body;
     const document = req.document;
 
@@ -1138,13 +1141,14 @@ export const forwardDocument = async (req, res, next) => {
       const existingUserForward = await DocumentForward.findOne({
         documentId: document._id,
         targetUserId,
+        status: { $in: ['draft', 'sent', 'resend', 'receive'] },
         isDeletedForDept: false,
       });
 
       if (existingUserForward) {
         return res.status(409).json({
           success: false,
-          message: `Document has already been forwarded to officer ${targetUser.name}`,
+          message: `Document has already been forwarded to officer ${targetUser.name} (Status: ${existingUserForward.status})`,
         });
       }
     } else if (targetDepartmentId) {
@@ -1158,13 +1162,14 @@ export const forwardDocument = async (req, res, next) => {
         documentId: document._id,
         targetDepartmentId,
         targetUserId: null,
+        status: { $in: ['draft', 'sent', 'resend', 'receive'] },
         isDeletedForDept: false,
       });
 
       if (existingDeptForward) {
         return res.status(409).json({
           success: false,
-          message: 'Document has already been forwarded to this department',
+          message: `Document has already been forwarded to this department (Status: ${existingDeptForward.status})`,
         });
       }
     }
@@ -1181,6 +1186,7 @@ export const forwardDocument = async (req, res, next) => {
 
     const chosenPriority = (priority || document.priority || 'routine').toLowerCase();
     const chosenAccess = (accessControl || targetAudience || 'general').toLowerCase();
+    const initialStatus = requestedStatus === 'draft' ? 'draft' : 'sent';
 
     const forwardRecord = await DocumentForward.create({
       documentId: document._id,
@@ -1191,57 +1197,94 @@ export const forwardDocument = async (req, res, next) => {
       priority: chosenPriority,
       accessControl: chosenAccess,
       remarks: remarks || '',
+      status: initialStatus,
+      sentAt: initialStatus === 'sent' ? new Date() : null,
+      allowedUsers: Array.isArray(allowedUsers) ? allowedUsers : [],
     });
-
-    // Auto-grant permissions in DocumentPermission if forwarded to a specific user
-    if (targetUserId) {
-      await DocumentPermission.findOneAndUpdate(
-        { documentId: document._id, userId: targetUserId },
-        {
-          $set: {
-            documentId: document._id,
-            userId: targetUserId,
-            departmentId: finalTargetDeptId,
-            permissions: {
-              canView: true,
-              canRemark: true,
-              canSuggestChange: true,
-              canDownload: true,
-            },
-            grantedBy: req.user.id,
-          },
-        },
-        { upsert: true, new: true }
-      );
-    }
-
-    // If allowedUsers passed for forwarded department, store into DocumentPermission
-    if (allowedUsers && Array.isArray(allowedUsers) && allowedUsers.length > 0) {
-      const permDocs = allowedUsers.map((u) => ({
-        documentId: document._id,
-        userId: u.userId,
-        departmentId: finalTargetDeptId,
-        permissions: u.permissions || {
-          canView: true,
-          canRemark: true,
-          canSuggestChange: true,
-          canDownload: true,
-        },
-        grantedBy: req.user.id,
-      }));
-      await DocumentPermission.insertMany(permDocs, { ordered: false }).catch(() => {});
-    }
 
     const targetLabel = targetUser
       ? `officer '${targetUser.name}' (${targetDept.name})`
       : `'${targetDept.name}' department`;
+
+    // Only log if forwarded (sent). Draft forwards are kept silent without audit logs
+    if (initialStatus === 'sent') {
+      await recordDocumentLog({
+        fileId: document._id,
+        fileNumber: document.fileNumber || '',
+        user: req.user,
+        action: 'File Forwarded',
+        details: `Document forwarded to ${targetLabel} by ${req.user.name || req.user.email}`,
+        req,
+      });
+    }
+
+    const populated = await DocumentForward.findById(forwardRecord._id)
+      .populate('targetDepartmentId', 'name code')
+      .populate('targetUserId', 'name employeeId designation email')
+      .populate('fromDepartmentId', 'name code');
+
+    res.status(200).json({
+      success: true,
+      message:
+        initialStatus === 'draft'
+          ? `Document forward saved as draft for ${targetUser ? targetUser.name : targetDept.name}`
+          : targetUser
+          ? `Document successfully forwarded to ${targetUser.name} (${targetDept.name})`
+          : `Document successfully forwarded to department: ${targetDept.name}`,
+      data: populated || forwardRecord,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 8.1 Dispatch Draft Forward
+ */
+export const sendDraftForward = async (req, res, next) => {
+  try {
+    const { id, forwardId } = req.params;
+    const document = req.document;
+
+    const forwardRecord = await DocumentForward.findOne({
+      _id: forwardId,
+      documentId: document._id,
+      isDeletedForDept: false,
+    });
+
+    if (!forwardRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Forward record not found',
+      });
+    }
+
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isSender = forwardRecord.forwardedBy.toString() === req.user.id.toString();
+    if (!isSuperAdmin && !isSender) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only the forward creator or Super Admin can dispatch this draft',
+      });
+    }
+
+    if (forwardRecord.status !== 'draft') {
+      return res.status(400).json({
+        success: false,
+        message: `Forward cannot be dispatched because its status is already '${forwardRecord.status}'`,
+      });
+    }
+
+    forwardRecord.status = 'sent';
+    forwardRecord.sentAt = new Date();
+    await forwardRecord.save();
 
     await recordDocumentLog({
       fileId: document._id,
       fileNumber: document.fileNumber || '',
       user: req.user,
       action: 'File Forwarded',
-      details: `Document forwarded to ${targetLabel} by ${req.user.name || req.user.email}`,
+      details: `Draft forward dispatched to target by ${req.user.name || req.user.email}`,
       req,
     });
 
@@ -1252,10 +1295,388 @@ export const forwardDocument = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: targetUser
-        ? `Document successfully forwarded to ${targetUser.name} (${targetDept.name})`
-        : `Document successfully forwarded to department: ${targetDept.name}`,
+      message: 'Draft forward dispatched successfully',
       data: populated || forwardRecord,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 8.2 Resend Forwarded Document
+ */
+export const resendForward = async (req, res, next) => {
+  try {
+    const { id, forwardId } = req.params;
+    const { remarks, priority } = req.body;
+    const document = req.document;
+
+    const forwardRecord = await DocumentForward.findOne({
+      _id: forwardId,
+      documentId: document._id,
+      isDeletedForDept: false,
+    });
+
+    if (!forwardRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Forward record not found',
+      });
+    }
+
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isSender = forwardRecord.forwardedBy.toString() === req.user.id.toString();
+    const isSenderDeptAdmin =
+      req.user.role === 'department_admin' &&
+      req.user.departmentId?.toString() === forwardRecord.fromDepartmentId.toString();
+
+    if (!isSuperAdmin && !isSender && !isSenderDeptAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to resend this forward',
+      });
+    }
+
+    if (forwardRecord.status === 'receive') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot resend a file that has already been received by recipient',
+      });
+    }
+
+    if (forwardRecord.status === 'recalled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot resend a recalled forward. Please create a new forward instead.',
+      });
+    }
+
+    if (forwardRecord.status === 'draft') {
+      return res.status(400).json({
+        success: false,
+        message: 'Forward is currently in draft. Use the send endpoint to dispatch it.',
+      });
+    }
+
+    forwardRecord.status = 'resend';
+    forwardRecord.resendCount = (forwardRecord.resendCount || 0) + 1;
+    forwardRecord.lastResentAt = new Date();
+    if (remarks) {
+      forwardRecord.resendRemarks = remarks;
+      forwardRecord.remarks = remarks;
+    }
+    if (priority) {
+      forwardRecord.priority = priority.toLowerCase();
+    }
+    await forwardRecord.save();
+
+    await recordDocumentLog({
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
+      user: req.user,
+      action: 'File Resent',
+      details: `Document re-forwarded (Attempt #${forwardRecord.resendCount}) by ${req.user.name || req.user.email}${remarks ? `. Remarks: ${remarks}` : ''}`,
+      req,
+    });
+
+    const populated = await DocumentForward.findById(forwardRecord._id)
+      .populate('targetDepartmentId', 'name code')
+      .populate('targetUserId', 'name employeeId designation email')
+      .populate('fromDepartmentId', 'name code');
+
+    res.status(200).json({
+      success: true,
+      message: `Document forward resent successfully (Attempt #${forwardRecord.resendCount})`,
+      data: populated || forwardRecord,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 8.3 Recall Forwarded Document
+ */
+export const recallForward = async (req, res, next) => {
+  try {
+    const { id, forwardId } = req.params;
+    const { reason, remarks } = req.body;
+    const document = req.document;
+
+    const forwardRecord = await DocumentForward.findOne({
+      _id: forwardId,
+      documentId: document._id,
+      isDeletedForDept: false,
+    });
+
+    if (!forwardRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Forward record not found',
+      });
+    }
+
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isSender = forwardRecord.forwardedBy.toString() === req.user.id.toString();
+    const isSenderDeptAdmin =
+      req.user.role === 'department_admin' &&
+      req.user.departmentId?.toString() === forwardRecord.fromDepartmentId.toString();
+
+    if (!isSuperAdmin && !isSender && !isSenderDeptAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to recall this forward',
+      });
+    }
+
+    if (forwardRecord.status === 'receive') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot recall a file that has already been received by the recipient',
+      });
+    }
+
+    if (forwardRecord.status === 'recalled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Forward has already been recalled',
+      });
+    }
+
+    if (forwardRecord.status === 'draft') {
+      return res.status(400).json({
+        success: false,
+        message: 'Draft forward cannot be recalled. You can edit or delete the draft.',
+      });
+    }
+
+    const recallNote = reason || remarks || '';
+    forwardRecord.status = 'recalled';
+    forwardRecord.recalledAt = new Date();
+    forwardRecord.recalledBy = req.user.id;
+    forwardRecord.recallReason = recallNote;
+    await forwardRecord.save();
+
+    await recordDocumentLog({
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
+      user: req.user,
+      action: 'File Recalled',
+      details: `Document forward recalled by ${req.user.name || req.user.email}${recallNote ? `. Reason: ${recallNote}` : ''}`,
+      req,
+    });
+
+    const populated = await DocumentForward.findById(forwardRecord._id)
+      .populate('targetDepartmentId', 'name code')
+      .populate('targetUserId', 'name employeeId designation email')
+      .populate('fromDepartmentId', 'name code');
+
+    res.status(200).json({
+      success: true,
+      message: 'Document forward recalled successfully',
+      data: populated || forwardRecord,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 8.4 Receive Forwarded Document
+ * Recipient accepts custody: stamps receivedTime, unlocks permissions, creates workflow status and audit log
+ */
+export const receiveForward = async (req, res, next) => {
+  try {
+    const { id, forwardId } = req.params;
+    const { remarks, isPhysicalFileReceived } = req.body;
+
+    const document = await Document.findById(id);
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document not found',
+      });
+    }
+
+    const forwardRecord = await DocumentForward.findOne({
+      _id: forwardId,
+      documentId: document._id,
+      isDeletedForDept: false,
+    });
+
+    if (!forwardRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Forward record not found',
+      });
+    }
+
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const isTargetUser =
+      forwardRecord.targetUserId &&
+      forwardRecord.targetUserId.toString() === req.user.id.toString();
+    const isTargetDeptAdmin =
+      req.user.role === 'department_admin' &&
+      req.user.departmentId?.toString() === forwardRecord.targetDepartmentId.toString();
+    const isTargetDeptMember =
+      !forwardRecord.targetUserId &&
+      req.user.departmentId?.toString() === forwardRecord.targetDepartmentId.toString();
+
+    if (!isSuperAdmin && !isTargetUser && !isTargetDeptAdmin && !isTargetDeptMember) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to receive this forwarded document',
+      });
+    }
+
+    if (forwardRecord.status === 'receive') {
+      return res.status(400).json({
+        success: false,
+        message: 'This document forward has already been received',
+      });
+    }
+
+    if (forwardRecord.status === 'recalled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot receive: this document forward was recalled by the sender',
+      });
+    }
+
+    if (forwardRecord.status === 'draft') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot receive: this forward is still in draft and has not been dispatched',
+      });
+    }
+
+    const now = new Date();
+    forwardRecord.status = 'receive';
+    forwardRecord.receivedBy = req.user.id;
+    forwardRecord.receivedTime = now;
+
+    if (isPhysicalFileReceived === true || isPhysicalFileReceived === 'true') {
+      forwardRecord.isPhysicalFileReceived = true;
+      forwardRecord.physicalFileReceivedTime = now;
+    }
+
+    await forwardRecord.save();
+
+    // 1. Grant DocumentPermission to recipient officer
+    const permUserId = forwardRecord.targetUserId || req.user.id;
+    await DocumentPermission.findOneAndUpdate(
+      { documentId: document._id, userId: permUserId },
+      {
+        $set: {
+          documentId: document._id,
+          userId: permUserId,
+          departmentId: forwardRecord.targetDepartmentId,
+          permissions: {
+            canView: true,
+            canRemark: true,
+            canSuggestChange: true,
+            canDownload: true,
+          },
+          grantedBy: forwardRecord.forwardedBy,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    // If allowedUsers were attached to the forward, grant them permissions now
+    if (forwardRecord.allowedUsers && Array.isArray(forwardRecord.allowedUsers) && forwardRecord.allowedUsers.length > 0) {
+      const permDocs = forwardRecord.allowedUsers.map((u) => ({
+        documentId: document._id,
+        userId: u.userId,
+        departmentId: forwardRecord.targetDepartmentId,
+        permissions: u.permissions || {
+          canView: true,
+          canRemark: true,
+          canSuggestChange: true,
+          canDownload: true,
+        },
+        grantedBy: forwardRecord.forwardedBy,
+      }));
+      await DocumentPermission.insertMany(permDocs, { ordered: false }).catch(() => {});
+    }
+
+    // 2. Create DocumentWorkflowStatus ONLY now upon receipt
+    const workflowStatus = await DocumentWorkflowStatus.create({
+      documentId: document._id,
+      employeeId: req.user.id,
+      departmentId: req.user.departmentId || forwardRecord.targetDepartmentId,
+      status: 'receive',
+      statusUpdateTime: now,
+      remarks: remarks || 'Forwarded file acknowledged and received',
+      isPhysicalFileReceived: forwardRecord.isPhysicalFileReceived,
+      physicalFileReceivedTime: forwardRecord.physicalFileReceivedTime,
+    });
+
+    // 3. Create Audit DocumentLog
+    await recordDocumentLog({
+      fileId: document._id,
+      fileNumber: document.fileNumber || '',
+      user: req.user,
+      action: 'File Received',
+      details: `Document received and custody accepted by ${req.user.name || req.user.email}${forwardRecord.isPhysicalFileReceived ? ' (Physical file received)' : ''}${remarks ? `. Remarks: ${remarks}` : ''}`,
+      req,
+    });
+
+    const populated = await DocumentForward.findById(forwardRecord._id)
+      .populate('targetDepartmentId', 'name code')
+      .populate('targetUserId', 'name employeeId designation email')
+      .populate('fromDepartmentId', 'name code')
+      .populate('receivedBy', 'name employeeId designation email');
+
+    res.status(200).json({
+      success: true,
+      message: 'Document successfully received and custody accepted',
+      data: {
+        forward: populated || forwardRecord,
+        workflowStatus,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 8.5 Get Pending Receipt Forwards (Incoming Queue)
+ */
+export const getPendingReceiptForwards = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const userDeptId = req.user.departmentId;
+
+    const query = {
+      isDeletedForDept: false,
+      status: { $in: ['sent', 'resend'] },
+      $or: [
+        { targetUserId: userId },
+        ...(userDeptId ? [{ targetDepartmentId: userDeptId, targetUserId: null }] : []),
+      ],
+    };
+
+    const { page, pageSize, skip } = getPaginationParams(req.query);
+
+    const [forwards, total] = await Promise.all([
+      DocumentForward.find(query)
+        .sort({ sentAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .populate('documentId', 'fileNumber title subject priority registrationDate')
+        .populate('fromDepartmentId', 'name code')
+        .populate('forwardedBy', 'name employeeId designation email'),
+      DocumentForward.countDocuments(query),
+    ]);
+
+    const paginatedResponse = formatPaginatedResponse(forwards, total, page, pageSize);
+
+    res.status(200).json({
+      success: true,
+      data: paginatedResponse,
     });
   } catch (error) {
     next(error);

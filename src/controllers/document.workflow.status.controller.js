@@ -45,11 +45,12 @@ export const verifyUserDocumentAccess = async (user, document) => {
     }
   }
 
-  // 3.5. Direct user forward check
+  // 3.5. Direct user forward check (requires file to be received)
   if (userIdStr) {
     const userForwardRecord = await DocumentForward.findOne({
       documentId: document._id,
       targetUserId: userIdStr,
+      status: 'receive',
       isDeletedForDept: false,
     });
     if (userForwardRecord) {
@@ -57,11 +58,12 @@ export const verifyUserDocumentAccess = async (user, document) => {
     }
   }
 
-  // 4. Forwarded department check
+  // 4. Forwarded department check (requires file to be received)
   if (userDeptStr) {
     const forwardedRecord = await DocumentForward.findOne({
       documentId: document._id,
       targetDepartmentId: userDeptStr,
+      status: 'receive',
       isDeletedForDept: false,
     });
     if (forwardedRecord) {
