@@ -6,6 +6,21 @@ let transporter = null;
 export const getMailTransporter = async () => {
   if (transporter) return transporter;
 
+  if (
+    process.env.NODE_ENV === 'test' ||
+    process.env.npm_lifecycle_event === 'test' ||
+    process.execArgv?.includes('--test') ||
+    process.argv?.includes('--test')
+  ) {
+    transporter = {
+      sendMail: async (mailOptions) => ({
+        messageId: 'mock-test-message-id-' + Date.now(),
+      }),
+      verify: async () => true,
+    };
+    return transporter;
+  }
+
   if (appConfig.smtp.user && appConfig.smtp.pass) {
     transporter = nodemailer.createTransport({
       host: appConfig.smtp.host,

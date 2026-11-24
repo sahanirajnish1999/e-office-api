@@ -14,6 +14,7 @@ import { DocumentReplica } from '../models/document.replica.model.js';
 import { VirtualStickyNote } from '../models/virtual.sticky.model.js';
 import { User } from '../models/user.model.js';
 import { DocumentWorkflowStatus } from '../models/document.workflow.status.model.js';
+import { Notification } from '../models/notification.model.js';
 import { recordDocumentLog } from '../utils/document.logger.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
 import { moveToDocumentFolder, removeDocumentFolder } from '../utils/file.util.js';
@@ -1216,6 +1217,41 @@ export const forwardDocument = async (req, res, next) => {
         details: `Document forwarded to ${targetLabel} by ${req.user.name || req.user.email}`,
         req,
       });
+
+      // Send Notification to recipient or target department admin
+      try {
+        let recipientUserId = targetUserId;
+        let recipientEmpId = targetUser?.employeeId || '';
+        if (!recipientUserId && finalTargetDeptId) {
+          const deptAdmin = await User.findOne({
+            departmentId: finalTargetDeptId,
+            role: 'department_admin',
+            status: 'active',
+          });
+          if (deptAdmin) {
+            recipientUserId = deptAdmin._id;
+            recipientEmpId = deptAdmin.employeeId || '';
+          }
+        }
+
+        if (recipientUserId) {
+          await Notification.create({
+            title: `File Forwarded: ${document.fileNumber || document.title}`,
+            message: `Document "${document.title}" has been forwarded to you by ${req.user.name || req.user.email}.${remarks ? ` Remarks: ${remarks}` : ''}`,
+            fileReferenceNumber: document.fileNumber || '',
+            fileReferenceId: document._id,
+            priority: chosenPriority,
+            broadcast: 'specific_user',
+            targetUser: recipientUserId,
+            targetEmployeeId: recipientEmpId,
+            createdBy: req.user.id,
+            classification: 'Workflow Directive',
+            status: 'active',
+          });
+        }
+      } catch (err) {
+        console.error('Failed to create forward notification:', err.message);
+      }
     }
 
     const populated = await DocumentForward.findById(forwardRecord._id)
@@ -1287,6 +1323,44 @@ export const sendDraftForward = async (req, res, next) => {
       details: `Draft forward dispatched to target by ${req.user.name || req.user.email}`,
       req,
     });
+
+    // Send Notification to recipient or target department admin
+    try {
+      let recipientUserId = forwardRecord.targetUserId;
+      let recipientEmpId = '';
+      if (recipientUserId) {
+        const u = await User.findById(recipientUserId);
+        if (u) recipientEmpId = u.employeeId || '';
+      } else if (forwardRecord.targetDepartmentId) {
+        const deptAdmin = await User.findOne({
+          departmentId: forwardRecord.targetDepartmentId,
+          role: 'department_admin',
+          status: 'active',
+        });
+        if (deptAdmin) {
+          recipientUserId = deptAdmin._id;
+          recipientEmpId = deptAdmin.employeeId || '';
+        }
+      }
+
+      if (recipientUserId) {
+        await Notification.create({
+          title: `File Forwarded: ${document.fileNumber || document.title}`,
+          message: `Document "${document.title}" has been forwarded to you by ${req.user.name || req.user.email}.${forwardRecord.remarks ? ` Remarks: ${forwardRecord.remarks}` : ''}`,
+          fileReferenceNumber: document.fileNumber || '',
+          fileReferenceId: document._id,
+          priority: forwardRecord.priority || 'routine',
+          broadcast: 'specific_user',
+          targetUser: recipientUserId,
+          targetEmployeeId: recipientEmpId,
+          createdBy: req.user.id,
+          classification: 'Workflow Directive',
+          status: 'active',
+        });
+      }
+    } catch (err) {
+      console.error('Failed to create forward notification on send:', err.message);
+    }
 
     const populated = await DocumentForward.findById(forwardRecord._id)
       .populate('targetDepartmentId', 'name code')
@@ -1380,6 +1454,44 @@ export const resendForward = async (req, res, next) => {
       req,
     });
 
+    // Send Reminder Notification
+    try {
+      let recipientUserId = forwardRecord.targetUserId;
+      let recipientEmpId = '';
+      if (recipientUserId) {
+        const u = await User.findById(recipientUserId);
+        if (u) recipientEmpId = u.employeeId || '';
+      } else if (forwardRecord.targetDepartmentId) {
+        const deptAdmin = await User.findOne({
+          departmentId: forwardRecord.targetDepartmentId,
+          role: 'department_admin',
+          status: 'active',
+        });
+        if (deptAdmin) {
+          recipientUserId = deptAdmin._id;
+          recipientEmpId = deptAdmin.employeeId || '';
+        }
+      }
+
+      if (recipientUserId) {
+        await Notification.create({
+          title: `File Forward Reminder: ${document.fileNumber || document.title}`,
+          message: `Document "${document.title}" was re-forwarded to you (Attempt #${forwardRecord.resendCount}) by ${req.user.name || req.user.email}.${remarks ? ` Remarks: ${remarks}` : ''}`,
+          fileReferenceNumber: document.fileNumber || '',
+          fileReferenceId: document._id,
+          priority: forwardRecord.priority || 'urgent',
+          broadcast: 'specific_user',
+          targetUser: recipientUserId,
+          targetEmployeeId: recipientEmpId,
+          createdBy: req.user.id,
+          classification: 'Workflow Directive',
+          status: 'active',
+        });
+      }
+    } catch (err) {
+      console.error('Failed to create resend notification:', err.message);
+    }
+
     const populated = await DocumentForward.findById(forwardRecord._id)
       .populate('targetDepartmentId', 'name code')
       .populate('targetUserId', 'name employeeId designation email')
@@ -1466,6 +1578,20 @@ export const recallForward = async (req, res, next) => {
       details: `Document forward recalled by ${req.user.name || req.user.email}${recallNote ? `. Reason: ${recallNote}` : ''}`,
       req,
     });
+
+    // Dismiss pending forward notifications for this document
+    try {
+      await Notification.updateMany(
+        {
+          fileReferenceId: document._id,
+          ...(forwardRecord.targetUserId ? { targetUser: forwardRecord.targetUserId } : {}),
+          status: 'active',
+        },
+        { $set: { status: 'dismissed' } }
+      );
+    } catch (err) {
+      console.error('Failed to dismiss forward notifications on recall:', err.message);
+    }
 
     const populated = await DocumentForward.findById(forwardRecord._id)
       .populate('targetDepartmentId', 'name code')

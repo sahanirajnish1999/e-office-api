@@ -68,6 +68,8 @@ import {
   verifyUserDocumentAccess,
 } from '../src/controllers/document.workflow.status.controller.js';
 
+process.env.NODE_ENV = 'test';
+
 describe('Project Tests', () => {
   it('should generate and verify JWT token', () => {
     const payload = { id: '650c1f1e1f1e1f1e1f1e1f1e', email: 'admin@example.com', role: 'super_admin' };
@@ -3086,6 +3088,7 @@ describe('Project Tests', () => {
     User.findOne = origUserFindOne;
     User.create = origUserCreate;
     User.findById = origUserFindById;
+    User.findOne = origUserFindOne;
 
     assert.strictEqual(statusCode, 201);
     assert.strictEqual(responseData.success, true);
@@ -3565,19 +3568,26 @@ describe('Project Tests', () => {
 
     // 2. Forwarding with targetUserId auto-derives targetDepartmentId and grants permission
     const origUserFindById = User.findById;
+    const origUserFindOne = User.findOne;
     const origFwdFindOne = DocumentForward.findOne;
     const origFwdCreate = DocumentForward.create;
     const origFwdFindById = DocumentForward.findById;
     const origPermFindOneAndUpdate = DocumentPermission.findOneAndUpdate;
     const origLogCreate = DocumentLog.create;
+    const origNotifCreateGlobal = Notification.create;
     DocumentLog.create = async () => ({});
+    Notification.create = async () => ({});
+    User.findOne = async () => null;
 
+    const mockFinanceUser = {
+      _id: '650c1f1e1f1e1f1e1f1e4002',
+      name: 'Finance Officer',
+      employeeId: 'EMP-FIN-001',
+      departmentId: { _id: '650c1f1e1f1e1f1e1f1e3002', name: 'Finance', code: 'FIN' },
+    };
     User.findById = () => ({
-      populate: async () => ({
-        _id: '650c1f1e1f1e1f1e1f1e4002',
-        name: 'Finance Officer',
-        departmentId: { _id: '650c1f1e1f1e1f1e1f1e3002', name: 'Finance', code: 'FIN' },
-      }),
+      ...mockFinanceUser,
+      populate: async function () { return mockFinanceUser; },
     });
 
     DocumentForward.findOne = async () => null;
@@ -3658,12 +3668,14 @@ describe('Project Tests', () => {
     assert.strictEqual(createdForwardDoc.targetDepartmentId, '650c1f1e1f1e1f1e1f1e3003');
 
     User.findById = origUserFindById;
+    User.findOne = origUserFindOne;
     Department.findById = origDeptFindById;
     DocumentForward.findOne = origFwdFindOne;
     DocumentForward.create = origFwdCreate;
     DocumentForward.findById = origFwdFindById;
     DocumentPermission.findOneAndUpdate = origPermFindOneAndUpdate;
     DocumentLog.create = origLogCreate;
+    Notification.create = origNotifCreateGlobal;
   });
 
   it('should verify forward lifecycle: draft (no log), send, resend, recall, receive (with receivedTime) and no permissions until received', async () => {
@@ -3692,10 +3704,25 @@ describe('Project Tests', () => {
     const origFwdCreate = DocumentForward.create;
     const origFwdFindById = DocumentForward.findById;
     const origUserFindById = User.findById;
+    const origUserFindOne = User.findOne;
     const origDeptFindById = Department.findById;
     const origPermFindOneAndUpdate = DocumentPermission.findOneAndUpdate;
     const origLogCreate = DocumentLog.create;
     const origWorkflowCreate = DocumentWorkflowStatus.create;
+    const origNotifCreate = Notification.create;
+    const origNotifUpdateMany = Notification.updateMany;
+
+    let capturedNotifications = [];
+    Notification.create = async (notif) => {
+      capturedNotifications.push(notif);
+      return { _id: '650c1f1e1f1e1f1e1f1e9501', ...notif };
+    };
+
+    let capturedDismissed = [];
+    Notification.updateMany = async (filter, update) => {
+      capturedDismissed.push({ filter, update });
+      return { modifiedCount: 1 };
+    };
 
     let capturedLogs = [];
     DocumentLog.create = async (log) => {
@@ -3715,14 +3742,18 @@ describe('Project Tests', () => {
       return { _id: '650c1f1e1f1e1f1e1f1e9001', ...statusDoc };
     };
 
+    const mockTechUser = {
+      _id: '650c1f1e1f1e1f1e1f1e4003',
+      name: 'Technical Officer',
+      email: 'tech@gov.in',
+      employeeId: 'EMP-TECH-002',
+      departmentId: { _id: '650c1f1e1f1e1f1e1f1e3005', name: 'Technical', code: 'TECH' },
+    };
     User.findById = () => ({
-      populate: async () => ({
-        _id: '650c1f1e1f1e1f1e1f1e4003',
-        name: 'Technical Officer',
-        email: 'tech@gov.in',
-        departmentId: { _id: '650c1f1e1f1e1f1e1f1e3005', name: 'Technical', code: 'TECH' },
-      }),
+      ...mockTechUser,
+      populate: async function () { return mockTechUser; },
     });
+    User.findOne = async () => null;
 
     Department.findById = async (id) => ({
       _id: id,
@@ -3779,6 +3810,7 @@ describe('Project Tests', () => {
     assert.strictEqual(capturedPerms.length, 0, 'No permissions should be granted for draft');
     assert.strictEqual(capturedLogs.length, 0, 'No draft log should be created');
     assert.strictEqual(capturedWorkflowStatuses.length, 0, 'No workflow status should be created for draft');
+    assert.strictEqual(capturedNotifications.length, 0, 'No notification should be sent for draft');
 
     // --- STEP 2: Dispatch Draft Forward (Send) ---
     DocumentForward.findOne = async () => storedForward;
@@ -3799,6 +3831,9 @@ describe('Project Tests', () => {
     assert.strictEqual(capturedLogs.length, 1, 'File Forwarded log must be created on send');
     assert.strictEqual(capturedLogs[0].action, 'File Forwarded');
     assert.strictEqual(capturedWorkflowStatuses.length, 0, 'Still no workflow status before receive');
+    assert.strictEqual(capturedNotifications.length, 1, 'Notification must be sent to recipient on forward');
+    assert.ok(capturedNotifications[0].title.includes('File Forwarded'));
+    assert.strictEqual(capturedNotifications[0].targetUser, '650c1f1e1f1e1f1e1f1e4003');
 
     // --- STEP 3: Resend Forward ---
     await resendForward(
@@ -3819,6 +3854,8 @@ describe('Project Tests', () => {
     assert.strictEqual(capturedLogs.length, 2, 'File Resent log must be created');
     assert.strictEqual(capturedLogs[1].action, 'File Resent');
     assert.strictEqual(capturedWorkflowStatuses.length, 0, 'Still no workflow status on resend');
+    assert.strictEqual(capturedNotifications.length, 2, 'Reminder notification must be sent on resend');
+    assert.ok(capturedNotifications[1].title.includes('File Forward Reminder'));
 
     // --- STEP 4: Recall Forward ---
     await recallForward(
@@ -3838,6 +3875,8 @@ describe('Project Tests', () => {
     assert.strictEqual(storedForward.recallReason, 'Incorrect estimate sheet attached');
     assert.strictEqual(capturedLogs.length, 3, 'File Recalled log must be created');
     assert.strictEqual(capturedLogs[2].action, 'File Recalled');
+    assert.strictEqual(capturedDismissed.length, 1, 'Notifications must be dismissed on recall');
+    assert.strictEqual(capturedDismissed[0].update.$set.status, 'dismissed');
 
     // --- STEP 5: Cannot Receive a Recalled Forward ---
     await receiveForward(
@@ -3934,9 +3973,12 @@ describe('Project Tests', () => {
     DocumentForward.create = origFwdCreate;
     DocumentForward.findById = origFwdFindById;
     User.findById = origUserFindById;
+    User.findOne = origUserFindOne;
     Department.findById = origDeptFindById;
     DocumentPermission.findOneAndUpdate = origPermFindOneAndUpdate;
     DocumentLog.create = origLogCreate;
     DocumentWorkflowStatus.create = origWorkflowCreate;
+    Notification.create = origNotifCreate;
+    Notification.updateMany = origNotifUpdateMany;
   });
 });
