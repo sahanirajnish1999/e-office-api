@@ -45,6 +45,18 @@ export const verifyUserDocumentAccess = async (user, document) => {
     }
   }
 
+  // 3.5. Direct user forward check
+  if (userIdStr) {
+    const userForwardRecord = await DocumentForward.findOne({
+      documentId: document._id,
+      targetUserId: userIdStr,
+      isDeletedForDept: false,
+    });
+    if (userForwardRecord) {
+      return true;
+    }
+  }
+
   // 4. Forwarded department check
   if (userDeptStr) {
     const forwardedRecord = await DocumentForward.findOne({

@@ -20,6 +20,12 @@ const documentForwardSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    targetUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
     forwardedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -70,8 +76,10 @@ const documentForwardSchema = new mongoose.Schema(
 );
 
 // High-speed compound indexes for instant retrieval of forwarded files
+documentForwardSchema.index({ targetUserId: 1, isDeletedForDept: 1, forwardedAt: -1 });
 documentForwardSchema.index({ targetDepartmentId: 1, isDeletedForDept: 1, forwardedAt: -1 });
 documentForwardSchema.index({ documentId: 1, targetDepartmentId: 1, isDeletedForDept: 1 });
+documentForwardSchema.index({ documentId: 1, targetUserId: 1, isDeletedForDept: 1 });
 
 export const DocumentForward = mongoose.model('DocumentForward', documentForwardSchema);
 export default DocumentForward;

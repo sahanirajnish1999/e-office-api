@@ -91,7 +91,26 @@ export const checkDocumentAccess = (requiredPermission = 'canView') => {
         }
       }
 
-      // 2. Check Forwarded Departments Access via DocumentForward collection (O(1) indexed lookup)
+      // 2. Check Direct User Forward or Department Forward Access
+      if (!hasAccess && userIdStr) {
+        const userForwardRecord = await DocumentForward.findOne({
+          documentId: document._id,
+          targetUserId: userIdStr,
+          isDeletedForDept: false,
+        });
+
+        if (userForwardRecord) {
+          hasAccess = true;
+          userPermission = {
+            canView: true,
+            canRemark: true,
+            canSuggestChange: true,
+            canDownload: true,
+          };
+        }
+      }
+
+      // 3. Check Forwarded Departments Access via DocumentForward collection (O(1) indexed lookup)
       if (!hasAccess && userDeptStr) {
         const forwardedRecord = await DocumentForward.findOne({
           documentId: document._id,

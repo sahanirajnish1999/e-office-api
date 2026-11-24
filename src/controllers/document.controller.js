@@ -1083,6 +1083,7 @@ export const forwardDocument = async (req, res, next) => {
   try {
     const {
       targetDepartmentId,
+      targetUserId,
       priority,
       accessControl,
       targetAudience,
@@ -1091,10 +1092,10 @@ export const forwardDocument = async (req, res, next) => {
     } = req.body;
     const document = req.document;
 
-    if (!targetDepartmentId || !isValidObjectId(targetDepartmentId)) {
+    if (!targetDepartmentId && !targetUserId) {
       return res.status(400).json({
         success: false,
-        message: 'A valid targetDepartmentId is required to forward document',
+        message: 'Either targetDepartmentId or targetUserId is required to forward document',
       });
     }
 
@@ -1108,24 +1109,73 @@ export const forwardDocument = async (req, res, next) => {
       }
     }
 
-    const targetDept = await Department.findById(targetDepartmentId);
+    let finalTargetDeptId = targetDepartmentId;
+    let targetUser = null;
+
+    // If targetUserId is provided, validate user and auto-derive their departmentId
+    if (targetUserId) {
+      if (!isValidObjectId(targetUserId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid targetUserId format',
+        });
+      }
+      targetUser = await User.findById(targetUserId).populate('departmentId', 'name code');
+      if (!targetUser) {
+        return res.status(404).json({
+          success: false,
+          message: 'Target user to forward to not found',
+        });
+      }
+      if (!targetUser.departmentId) {
+        return res.status(400).json({
+          success: false,
+          message: `Target user ${targetUser.name} is not assigned to any department`,
+        });
+      }
+      finalTargetDeptId = targetUser.departmentId._id || targetUser.departmentId;
+
+      const existingUserForward = await DocumentForward.findOne({
+        documentId: document._id,
+        targetUserId,
+        isDeletedForDept: false,
+      });
+
+      if (existingUserForward) {
+        return res.status(409).json({
+          success: false,
+          message: `Document has already been forwarded to officer ${targetUser.name}`,
+        });
+      }
+    } else if (targetDepartmentId) {
+      if (!isValidObjectId(targetDepartmentId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid targetDepartmentId format',
+        });
+      }
+      const existingDeptForward = await DocumentForward.findOne({
+        documentId: document._id,
+        targetDepartmentId,
+        targetUserId: null,
+        isDeletedForDept: false,
+      });
+
+      if (existingDeptForward) {
+        return res.status(409).json({
+          success: false,
+          message: 'Document has already been forwarded to this department',
+        });
+      }
+    }
+
+    const targetDept = targetUser?.departmentId?.name
+      ? targetUser.departmentId
+      : await Department.findById(finalTargetDeptId);
     if (!targetDept) {
       return res.status(404).json({
         success: false,
         message: 'Target department to forward to not found',
-      });
-    }
-
-    const existingForward = await DocumentForward.findOne({
-      documentId: document._id,
-      targetDepartmentId,
-      isDeletedForDept: false,
-    });
-
-    if (existingForward) {
-      return res.status(409).json({
-        success: false,
-        message: `Document has already been forwarded to ${targetDept.name}`,
       });
     }
 
@@ -1135,19 +1185,42 @@ export const forwardDocument = async (req, res, next) => {
     const forwardRecord = await DocumentForward.create({
       documentId: document._id,
       fromDepartmentId: document.departmentId,
-      targetDepartmentId,
+      targetDepartmentId: finalTargetDeptId,
+      targetUserId: targetUserId || null,
       forwardedBy: req.user.id,
       priority: chosenPriority,
       accessControl: chosenAccess,
       remarks: remarks || '',
     });
 
+    // Auto-grant permissions in DocumentPermission if forwarded to a specific user
+    if (targetUserId) {
+      await DocumentPermission.findOneAndUpdate(
+        { documentId: document._id, userId: targetUserId },
+        {
+          $set: {
+            documentId: document._id,
+            userId: targetUserId,
+            departmentId: finalTargetDeptId,
+            permissions: {
+              canView: true,
+              canRemark: true,
+              canSuggestChange: true,
+              canDownload: true,
+            },
+            grantedBy: req.user.id,
+          },
+        },
+        { upsert: true, new: true }
+      );
+    }
+
     // If allowedUsers passed for forwarded department, store into DocumentPermission
     if (allowedUsers && Array.isArray(allowedUsers) && allowedUsers.length > 0) {
       const permDocs = allowedUsers.map((u) => ({
         documentId: document._id,
         userId: u.userId,
-        departmentId: targetDepartmentId,
+        departmentId: finalTargetDeptId,
         permissions: u.permissions || {
           canView: true,
           canRemark: true,
@@ -1159,19 +1232,30 @@ export const forwardDocument = async (req, res, next) => {
       await DocumentPermission.insertMany(permDocs, { ordered: false }).catch(() => {});
     }
 
+    const targetLabel = targetUser
+      ? `officer '${targetUser.name}' (${targetDept.name})`
+      : `'${targetDept.name}' department`;
+
     await recordDocumentLog({
       fileId: document._id,
       fileNumber: document.fileNumber || '',
       user: req.user,
       action: 'File Forwarded',
-      details: `Document forwarded to '${targetDept.name}' by ${req.user.name || req.user.email}`,
+      details: `Document forwarded to ${targetLabel} by ${req.user.name || req.user.email}`,
       req,
     });
 
+    const populated = await DocumentForward.findById(forwardRecord._id)
+      .populate('targetDepartmentId', 'name code')
+      .populate('targetUserId', 'name employeeId designation email')
+      .populate('fromDepartmentId', 'name code');
+
     res.status(200).json({
       success: true,
-      message: `Document successfully forwarded to department: ${targetDept.name}`,
-      data: forwardRecord,
+      message: targetUser
+        ? `Document successfully forwarded to ${targetUser.name} (${targetDept.name})`
+        : `Document successfully forwarded to department: ${targetDept.name}`,
+      data: populated || forwardRecord,
     });
   } catch (error) {
     next(error);

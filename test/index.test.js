@@ -26,7 +26,7 @@ import { sendAccountCreatedEmail, sendSignatureOtpEmail } from '../src/utils/mai
 import { moveToDocumentFolder, removeDocumentFolder } from '../src/utils/file.util.js';
 import { listDepartments, updateDepartment, deleteDepartment, getDepartmentById as getDeptById } from '../src/controllers/department.controller.js';
 import { listUsers, getUserCounts, updateLastActiveTime, getUserDashboardSummary } from '../src/controllers/user.controller.js';
-import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical, archiveDocument, listArchivedDocuments } from '../src/controllers/document.controller.js';
+import { getAllDocumentLogs, getDocumentById, searchAndListDocuments, listDocumentPermissions, getMyDocumentCounts, searchAndListDocumentsAlphabetical, archiveDocument, listArchivedDocuments, forwardDocument } from '../src/controllers/document.controller.js';
 import { generateNextEmployeeId, createEmployee, listEmployees } from '../src/controllers/employee.controller.js';
 import { listReplicas } from '../src/controllers/document.replica.controller.js';
 import { getMyRequests, listAllRequests } from '../src/controllers/email.request.controller.js';
@@ -248,6 +248,7 @@ describe('Project Tests', () => {
     assert.ok(fwdPaths.includes('documentId'));
     assert.ok(fwdPaths.includes('fromDepartmentId'));
     assert.ok(fwdPaths.includes('targetDepartmentId'));
+    assert.ok(fwdPaths.includes('targetUserId'));
     assert.ok(fwdPaths.includes('forwardedBy'));
     assert.ok(fwdPaths.includes('priority'));
     assert.ok(fwdPaths.includes('accessControl'));
@@ -3510,5 +3511,145 @@ describe('Project Tests', () => {
     DocumentWorkflowStatus.findById = origFindById;
     DocumentWorkflowStatus.findByIdAndDelete = origFindByIdAndDelete;
     Document.findById = origDocFindById;
+  });
+
+  it('should verify forwardDocument supports targetUserId, auto-sets targetDepartmentId, and auto-grants permission', async () => {
+    assert.strictEqual(typeof forwardDocument, 'function');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    const mockDocument = {
+      _id: '650c1f1e1f1e1f1e1f1e5001',
+      title: 'Track Modernization Phase 2',
+      departmentId: '650c1f1e1f1e1f1e1f1e3001',
+      fileNumber: 'MOR/CIVIL/F-101',
+    };
+
+    // 1. Rejects when neither targetDepartmentId nor targetUserId is provided
+    await forwardDocument(
+      {
+        body: {},
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseData.message.includes('Either targetDepartmentId or targetUserId is required'));
+
+    // 2. Forwarding with targetUserId auto-derives targetDepartmentId and grants permission
+    const origUserFindById = User.findById;
+    const origFwdFindOne = DocumentForward.findOne;
+    const origFwdCreate = DocumentForward.create;
+    const origFwdFindById = DocumentForward.findById;
+    const origPermFindOneAndUpdate = DocumentPermission.findOneAndUpdate;
+    const origLogCreate = DocumentLog.create;
+    DocumentLog.create = async () => ({});
+
+    User.findById = () => ({
+      populate: async () => ({
+        _id: '650c1f1e1f1e1f1e1f1e4002',
+        name: 'Finance Officer',
+        departmentId: { _id: '650c1f1e1f1e1f1e1f1e3002', name: 'Finance', code: 'FIN' },
+      }),
+    });
+
+    DocumentForward.findOne = async () => null;
+    let createdForwardDoc = null;
+    DocumentForward.create = async (doc) => {
+      createdForwardDoc = doc;
+      return { _id: '650c1f1e1f1e1f1e1f1e7001', ...doc };
+    };
+
+    let grantedPerm = null;
+    DocumentPermission.findOneAndUpdate = async (filter, update) => {
+      grantedPerm = update.$set;
+      return grantedPerm;
+    };
+
+    DocumentForward.findById = () => ({
+      populate() {
+        return {
+          populate() {
+            return {
+              populate: async () => ({
+                _id: '650c1f1e1f1e1f1e1f1e7001',
+                documentId: mockDocument._id,
+                targetUserId: { _id: '650c1f1e1f1e1f1e1f1e4002', name: 'Finance Officer' },
+                targetDepartmentId: { _id: '650c1f1e1f1e1f1e1f1e3002', name: 'Finance' },
+              }),
+            };
+          },
+        };
+      },
+    });
+
+    await forwardDocument(
+      {
+        body: {
+          targetUserId: '650c1f1e1f1e1f1e1f1e4002',
+          priority: 'urgent',
+          remarks: 'Review finance concurrence',
+        },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(createdForwardDoc.targetUserId, '650c1f1e1f1e1f1e1f1e4002');
+    assert.strictEqual(createdForwardDoc.targetDepartmentId.toString(), '650c1f1e1f1e1f1e1f1e3002');
+    assert.ok(grantedPerm, 'Permission must be auto-granted');
+    assert.strictEqual(grantedPerm.userId, '650c1f1e1f1e1f1e1f1e4002');
+    assert.strictEqual(grantedPerm.permissions.canView, true);
+
+    // 3. Forwarding with only targetDepartmentId
+    const origDeptFindById = Department.findById;
+    Department.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e3003',
+      name: 'Electrical',
+      code: 'ELEC',
+    });
+
+    await forwardDocument(
+      {
+        body: {
+          targetDepartmentId: '650c1f1e1f1e1f1e1f1e3003',
+          remarks: 'Department wide forward',
+        },
+        document: mockDocument,
+        user: { id: '650c1f1e1f1e1f1e1f1e1001', role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(createdForwardDoc.targetUserId, null);
+    assert.strictEqual(createdForwardDoc.targetDepartmentId, '650c1f1e1f1e1f1e1f1e3003');
+
+    User.findById = origUserFindById;
+    Department.findById = origDeptFindById;
+    DocumentForward.findOne = origFwdFindOne;
+    DocumentForward.create = origFwdCreate;
+    DocumentForward.findById = origFwdFindById;
+    DocumentPermission.findOneAndUpdate = origPermFindOneAndUpdate;
+    DocumentLog.create = origLogCreate;
   });
 });
