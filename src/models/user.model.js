@@ -30,13 +30,19 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['super_admin', 'department_admin', 'employee'],
+      enum: ['super_admin', 'ministry_admin', 'department_admin', 'employee'],
       default: 'employee',
+    },
+    ministryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ministry',
+      default: null, // set for ministry_admin
+      index: true,
     },
     departmentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Department',
-      default: null, // super_admin has null departmentId
+      default: null, // super_admin and ministry_admin have null departmentId
     },
     employeeId: {
       type: String,

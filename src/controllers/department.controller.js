@@ -1,12 +1,14 @@
 import mongoose from 'mongoose';
 import { Department } from '../models/department.model.js';
+import { Ministry } from '../models/ministry.model.js';
 import { User } from '../models/user.model.js';
 import { Document } from '../models/document.model.js';
 import { getPaginationParams, formatPaginatedResponse } from '../utils/pagination.util.js';
+import { isValidObjectId } from '../utils/validator.util.js';
 
 export const createDepartment = async (req, res, next) => {
   try {
-    const { name, code, description } = req.body;
+    const { name, code, description, ministryId } = req.body;
 
     if (!name || !code) {
       return res.status(400).json({
@@ -26,10 +28,32 @@ export const createDepartment = async (req, res, next) => {
       });
     }
 
+    let targetMinistryId = ministryId;
+    if (req.user?.role === 'ministry_admin' && req.user.ministryId) {
+      targetMinistryId = req.user.ministryId;
+    }
+
+    if (targetMinistryId) {
+      if (!isValidObjectId(targetMinistryId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid ministryId format',
+        });
+      }
+      const ministry = await Ministry.findById(targetMinistryId);
+      if (!ministry) {
+        return res.status(404).json({
+          success: false,
+          message: 'Specified ministry does not exist',
+        });
+      }
+    }
+
     const department = await Department.create({
       name: name.trim(),
       code: code.trim().toUpperCase(),
       description: description || '',
+      ministryId: targetMinistryId || null,
       createdBy: req.user.id,
     });
 
@@ -45,17 +69,27 @@ export const createDepartment = async (req, res, next) => {
 
 export const listDepartments = async (req, res, next) => {
   try {
-    if (req.user?.role !== 'super_admin') {
+    const isSuperAdmin = req.user?.role === 'super_admin';
+    const isMinistryAdmin = req.user?.role === 'ministry_admin';
+
+    if (!isSuperAdmin && !isMinistryAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Only Super Admin has permission to list departments',
+        message: 'Forbidden: Only Super Admin or Ministry Admin has permission to list departments',
       });
     }
 
     const { page, pageSize, skip } = getPaginationParams(req.query);
-    const { search, q, sortBy, sortAlphabetical } = req.query;
+    const { search, q, sortBy, sortAlphabetical, ministryId } = req.query;
 
     const pipeline = [];
+
+    // Filter by Ministry for Ministry Admin or if ministryId is supplied
+    if (isMinistryAdmin && req.user.ministryId) {
+      pipeline.push({ $match: { ministryId: new mongoose.Types.ObjectId(req.user.ministryId) } });
+    } else if (ministryId && isValidObjectId(ministryId)) {
+      pipeline.push({ $match: { ministryId: new mongoose.Types.ObjectId(ministryId) } });
+    }
 
     // 1. Correlate Admin Info
     pipeline.push({
@@ -186,6 +220,25 @@ export const listDepartments = async (req, res, next) => {
               as: 'creatorInfo',
             },
           },
+          // Lookup Ministry details for the paginated page only
+          {
+            $lookup: {
+              from: 'ministries',
+              localField: 'ministryId',
+              foreignField: '_id',
+              pipeline: [
+                {
+                  $project: {
+                    _id: 0,
+                    id: { $toString: '$_id' },
+                    name: 1,
+                    code: 1,
+                  },
+                },
+              ],
+              as: 'ministryInfo',
+            },
+          },
           // Final clean projection (id instead of _id)
           {
             $project: {
@@ -194,6 +247,9 @@ export const listDepartments = async (req, res, next) => {
               name: 1,
               code: 1,
               description: 1,
+              ministryId: { $ifNull: [{ $toString: '$ministryId' }, null] },
+              ministryName: { $ifNull: [{ $arrayElemAt: ['$ministryInfo.name', 0] }, ''] },
+              ministryCode: { $ifNull: [{ $arrayElemAt: ['$ministryInfo.code', 0] }, ''] },
               adminName: 1,
               adminDesignation: 1,
               employeesCount: 1,
@@ -227,15 +283,20 @@ export const listDepartments = async (req, res, next) => {
 
 export const getDepartmentById = async (req, res, next) => {
   try {
-    if (req.user?.role !== 'super_admin') {
+    const isSuperAdmin = req.user?.role === 'super_admin';
+    const isMinistryAdmin = req.user?.role === 'ministry_admin';
+
+    if (!isSuperAdmin && !isMinistryAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Only Super Admin has permission to view department details',
+        message: 'Forbidden: Only Super Admin or Ministry Admin has permission to view department details',
       });
     }
 
     const { id } = req.params;
-    const department = await Department.findById(id).populate('createdBy', 'name email');
+    const department = await Department.findById(id)
+      .populate('createdBy', 'name email')
+      .populate('ministryId', 'name code description');
 
     if (!department) {
       return res.status(404).json({
@@ -244,8 +305,24 @@ export const getDepartmentById = async (req, res, next) => {
       });
     }
 
+    // Ministry Admin can only view departments under their assigned ministry
+    if (isMinistryAdmin && department.ministryId) {
+      const deptMinId = department.ministryId._id ? department.ministryId._id.toString() : department.ministryId.toString();
+      if (deptMinId !== req.user.ministryId?.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: You do not have permission to view departments of other ministries',
+        });
+      }
+    } else if (isMinistryAdmin && !department.ministryId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: You do not have permission to view departments not under your ministry',
+      });
+    }
+
     // Also get the admin and employees of this department
-    const members = await User.find({ departmentId: id }).select('name email role');
+    const members = await User.find({ departmentId: id }).select('name email role designation employeeId');
 
     res.status(200).json({
       success: true,
@@ -261,7 +338,7 @@ export const getDepartmentById = async (req, res, next) => {
 
 /**
  * 4. Update Department
- * Super Admin only
+ * Super Admin or Ministry Admin (for departments under their ministry)
  * Route: PUT /api/departments/:id
  * Only updates the fields provided in req.body
  */
@@ -276,13 +353,23 @@ export const updateDepartment = async (req, res, next) => {
       });
     }
 
-    const { name, code, description } = req.body;
+    const isSuperAdmin = req.user?.role === 'super_admin';
+    const isMinistryAdmin = req.user?.role === 'ministry_admin';
+
+    if (req.user && !isSuperAdmin && !isMinistryAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Super Admin or Ministry Admin can update department details',
+      });
+    }
+
+    const { name, code, description, ministryId } = req.body;
 
     // Check that at least one field is provided to update
-    if (name === undefined && code === undefined && description === undefined) {
+    if (name === undefined && code === undefined && description === undefined && ministryId === undefined) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide at least one field to update (name, code, or description)',
+        message: 'Please provide at least one field to update (name, code, description, or ministryId)',
       });
     }
 
@@ -292,6 +379,16 @@ export const updateDepartment = async (req, res, next) => {
         success: false,
         message: 'Department not found',
       });
+    }
+
+    // Ministry Admin can only update departments under their own ministry
+    if (isMinistryAdmin) {
+      if (department.ministryId?.toString() !== req.user.ministryId?.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: You can only update departments belonging to your assigned ministry',
+        });
+      }
     }
 
     // Check duplicate name or code if changing
@@ -321,6 +418,9 @@ export const updateDepartment = async (req, res, next) => {
     if (name !== undefined) department.name = name.trim();
     if (code !== undefined) department.code = code.trim().toUpperCase();
     if (description !== undefined) department.description = description.trim();
+    if (ministryId !== undefined && isSuperAdmin) {
+      department.ministryId = ministryId && isValidObjectId(ministryId) ? ministryId : null;
+    }
 
     await department.save();
 
@@ -328,6 +428,81 @@ export const updateDepartment = async (req, res, next) => {
       success: true,
       message: 'Department updated successfully',
       data: department,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * 4.1 Assign or Transfer Department to Ministry
+ * Super Admin or Ministry Admin
+ * Route: PATCH /api/departments/:id/ministry
+ */
+export const assignMinistryToDepartment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { ministryId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid department ID format',
+      });
+    }
+
+    const isSuperAdmin = req.user?.role === 'super_admin';
+    const isMinistryAdmin = req.user?.role === 'ministry_admin';
+
+    if (req.user && !isSuperAdmin && !isMinistryAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Super Admin or Ministry Admin can assign department to ministry',
+      });
+    }
+
+    const department = await Department.findById(id);
+    if (!department) {
+      return res.status(404).json({
+        success: false,
+        message: 'Department not found',
+      });
+    }
+
+    let targetMinistryId = ministryId;
+    if (isMinistryAdmin) {
+      targetMinistryId = req.user.ministryId;
+    }
+
+    if (targetMinistryId) {
+      if (!isValidObjectId(targetMinistryId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid ministryId format',
+        });
+      }
+      const ministry = await Ministry.findById(targetMinistryId);
+      if (!ministry) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ministry not found',
+        });
+      }
+      department.ministryId = targetMinistryId;
+    } else {
+      department.ministryId = null;
+    }
+
+    await department.save();
+
+    const populated = await Department.findById(id).populate('ministryId', 'name code description');
+
+    res.status(200).json({
+      success: true,
+      message: targetMinistryId
+        ? `Department successfully assigned under ministry '${populated.ministryId?.name || ''}'`
+        : 'Department successfully detached from ministry',
+      data: populated,
     });
   } catch (error) {
     next(error);

@@ -21,6 +21,12 @@ const departmentSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    ministryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ministry',
+      default: null,
+      index: true,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

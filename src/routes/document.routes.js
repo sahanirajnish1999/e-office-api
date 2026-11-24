@@ -75,11 +75,11 @@ router.post(
   autoCleanupOnError,
   createDocument
 );
-router.get('/', authorizeRoles('super_admin'), searchAndListDocuments);
+router.get('/', authorizeRoles('super_admin', 'ministry_admin'), searchAndListDocuments);
 
 // 2. Document Details & Logs
-router.get('/logs', authorizeRoles('super_admin'), getAllDocumentLogs);
-router.get('/files/counts', authorizeRoles('super_admin'), getDocumentFileCounts);
+router.get('/logs', authorizeRoles('super_admin', 'ministry_admin'), getAllDocumentLogs);
+router.get('/files/counts', authorizeRoles('super_admin', 'ministry_admin'), getDocumentFileCounts);
 router.get('/my-counts', checkPermission('canViewMyFiles'), getMyDocumentCounts);
 router.get('/counts', checkPermission('canViewMyFiles'), getMyDocumentCounts);
 router.get('/dashboard-summary', getUserDashboardSummary);
@@ -94,25 +94,25 @@ router.post('/:id/logs', checkPermission('canViewMyFiles'), checkDocumentAccess(
 // 3. Permissions Management (Pattern B: Handles 500 - 2,000+ users cleanly)
 router.patch(
   '/:id/permissions',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   updatePermissions
 );
 router.get(
   '/:id/permissions',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   listDocumentPermissions
 );
 router.post(
   '/:id/permissions/grant',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   grantDocumentPermissions
 );
 router.delete(
   '/:id/permissions/:userId',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   revokeDocumentPermission
 );
@@ -120,13 +120,13 @@ router.delete(
 // 4. Department Forwarding
 router.post(
   '/:id/forward',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   forwardDocument
 );
 router.patch(
   '/:id/forwarded-permissions/:departmentId',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkDocumentAccess('canView'),
   updateForwardedPermissions
 );
@@ -142,7 +142,7 @@ router.patch('/:id/stickies/:stickyId/approve', checkDocumentAccess('canView'), 
 router.post('/:id/notings', checkPermission('canAddOfficialNoting'), checkDocumentAccess('canView'), addNoting);
 router.patch(
   '/:id/notings/:notingId/approve',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkPermission('canApproveNoting'),
   checkDocumentAccess('canView'),
   approveNoting
@@ -165,7 +165,7 @@ router.get('/:id/files', checkPermission('canViewMyFiles'), checkDocumentAccess(
 router.get('/:id/files/:fileId', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), getDocumentFileById);
 router.patch(
   '/:id/files/:fileId/review',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkPermission('canViewApprovals'),
   checkDocumentAccess('canView'),
   reviewDocumentFile
@@ -189,7 +189,7 @@ router.post(
 router.get('/:id/replicas', checkPermission('canViewMyFiles'), checkDocumentAccess('canView'), listReplicas);
 router.patch(
   '/replicas/:replicaId/review',
-  authorizeRoles('super_admin', 'department_admin'),
+  authorizeRoles('super_admin', 'ministry_admin', 'department_admin'),
   checkPermission('canViewApprovals'),
   reviewReplica
 );

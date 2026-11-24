@@ -7,8 +7,8 @@ const router = Router();
 
 router.use(authenticateToken);
 
-// Super admin and Department Admin can create and view employees
-router.post('/', authorizeRoles('super_admin', 'department_admin'), createEmployee);
-router.get('/', authorizeRoles('super_admin', 'department_admin'), listEmployees);
+// Super admin, Ministry Admin, and Department Admin can create and view employees
+router.post('/', authorizeRoles('super_admin', 'ministry_admin', 'department_admin'), createEmployee);
+router.get('/', authorizeRoles('super_admin', 'ministry_admin', 'department_admin'), listEmployees);
 
 export default router;

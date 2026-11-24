@@ -323,10 +323,10 @@ export const createDocument = async (req, res, next) => {
  */
 export const searchAndListDocuments = async (req, res, next) => {
   try {
-    if (req.user?.role !== 'super_admin') {
+    if (req.user?.role !== 'super_admin' && req.user?.role !== 'ministry_admin') {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Only Super Admin has permission to search and list all documents',
+        message: 'Forbidden: Only Super Admin or Ministry Admin has permission to search and list documents',
       });
     }
 
@@ -360,6 +360,16 @@ export const searchAndListDocuments = async (req, res, next) => {
         query.departmentId = new mongoose.Types.ObjectId(departmentId);
       } else if (departmentId) {
         query.departmentId = departmentId;
+      }
+    } else if (req.user.role === 'ministry_admin' && req.user.ministryId) {
+      const ministryDeptIds = await Department.find({ ministryId: req.user.ministryId }).distinct('_id');
+      if (departmentId) {
+        if (!ministryDeptIds.some((id) => id.toString() === departmentId.toString())) {
+          return res.status(200).json(formatPaginatedResponse({ total: 0, page: 1, pageSize: 20, data: [] }));
+        }
+        query.departmentId = isValidObjectId(departmentId) ? new mongoose.Types.ObjectId(departmentId) : departmentId;
+      } else {
+        query.departmentId = { $in: ministryDeptIds.map((id) => new mongoose.Types.ObjectId(id)) };
       }
     } else if (req.user.role === 'department_admin') {
       const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
@@ -836,11 +846,13 @@ export const updatePermissions = async (req, res, next) => {
     const isOriginAdmin =
       req.user.role === 'department_admin' &&
       req.user.departmentId?.toString() === document.departmentId.toString();
+    const isMinistryAdmin =
+      req.user.role === 'ministry_admin' && req.userPermission?.isMinistryAdmin;
 
-    if (!isSuperAdmin && !isOriginAdmin) {
+    if (!isSuperAdmin && !isOriginAdmin && !isMinistryAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Only Super Admin or Originating Department Admin can update main permissions',
+        message: 'Only Super Admin, Ministry Admin, or Originating Department Admin can update main permissions',
       });
     }
 
@@ -1401,10 +1413,10 @@ export const approveNoting = async (req, res, next) => {
     const { notingId } = req.params;
     const document = req.document;
 
-    if (req.user.role !== 'super_admin' && req.user.role !== 'department_admin') {
+    if (req.user.role !== 'super_admin' && req.user.role !== 'department_admin' && req.user.role !== 'ministry_admin') {
       return res.status(403).json({
         success: false,
-        message: 'Only Department Admins or Super Admins can sign and approve document notings',
+        message: 'Only Department Admins, Ministry Admins, or Super Admins can sign and approve document notings',
       });
     }
 
@@ -1578,6 +1590,16 @@ export const listArchivedDocuments = async (req, res, next) => {
         andConditions.push({ departmentId: new mongoose.Types.ObjectId(departmentId) });
       } else if (departmentId) {
         andConditions.push({ departmentId });
+      }
+    } else if (req.user.role === 'ministry_admin' && req.user.ministryId) {
+      const ministryDeptIds = await Department.find({ ministryId: req.user.ministryId }).distinct('_id');
+      if (departmentId) {
+        if (!ministryDeptIds.some((id) => id.toString() === departmentId.toString())) {
+          return res.status(200).json(formatPaginatedResponse({ total: 0, page: 1, pageSize: 20, data: [] }));
+        }
+        andConditions.push({ departmentId: isValidObjectId(departmentId) ? new mongoose.Types.ObjectId(departmentId) : departmentId });
+      } else {
+        andConditions.push({ departmentId: { $in: ministryDeptIds.map((id) => new mongoose.Types.ObjectId(id)) } });
       }
     } else if (req.user.role === 'department_admin') {
       const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;
@@ -2376,6 +2398,16 @@ export const searchAndListDocumentsAlphabetical = async (req, res, next) => {
         andConditions.push({ departmentId: new mongoose.Types.ObjectId(departmentId) });
       } else if (departmentId) {
         andConditions.push({ departmentId });
+      }
+    } else if (req.user.role === 'ministry_admin' && req.user.ministryId) {
+      const ministryDeptIds = await Department.find({ ministryId: req.user.ministryId }).distinct('_id');
+      if (departmentId) {
+        if (!ministryDeptIds.some((id) => id.toString() === departmentId.toString())) {
+          return res.status(200).json(formatPaginatedResponse({ total: 0, page: 1, pageSize: 20, data: [] }));
+        }
+        andConditions.push({ departmentId: isValidObjectId(departmentId) ? new mongoose.Types.ObjectId(departmentId) : departmentId });
+      } else {
+        andConditions.push({ departmentId: { $in: ministryDeptIds.map((id) => new mongoose.Types.ObjectId(id)) } });
       }
     } else if (req.user.role === 'department_admin') {
       const targetDeptObjId = isValidObjectId(userDeptId) ? new mongoose.Types.ObjectId(userDeptId) : userDeptId;

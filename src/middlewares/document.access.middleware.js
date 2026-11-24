@@ -1,4 +1,5 @@
 import { Document } from '../models/document.model.js';
+import { Department } from '../models/department.model.js';
 import { DocumentForward } from '../models/document.forward.model.js';
 import { DocumentPermission } from '../models/document.permission.model.js';
 
@@ -26,6 +27,22 @@ export const checkDocumentAccess = (requiredPermission = 'canView') => {
           isSuperAdmin: true,
         };
         return next();
+      }
+
+      // Ministry Admin has access to all documents belonging to departments within their ministry
+      if (req.user.role === 'ministry_admin' && req.user.ministryId) {
+        const dept = await Department.findById(document.departmentId);
+        if (dept && dept.ministryId?.toString() === req.user.ministryId.toString()) {
+          req.document = document;
+          req.userPermission = {
+            canView: true,
+            canRemark: true,
+            canSuggestChange: true,
+            canDownload: true,
+            isMinistryAdmin: true,
+          };
+          return next();
+        }
       }
 
       const userIdStr = req.user.id.toString();

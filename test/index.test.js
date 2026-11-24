@@ -46,6 +46,27 @@ import {
 } from '../src/controllers/notification.controller.js';
 import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone, isValidObjectId } from '../src/utils/validator.util.js';
 import { generateNextFileNumber } from '../src/utils/document.util.js';
+import { Ministry } from '../src/models/ministry.model.js';
+import {
+  createMinistry,
+  listMinistries,
+  getMinistryById,
+  updateMinistry,
+  deleteMinistry,
+} from '../src/controllers/ministry.controller.js';
+import { assignMinistryToDepartment, createDepartment } from '../src/controllers/department.controller.js';
+import { createMinistryAdmin } from '../src/controllers/user.controller.js';
+import { checkDocumentAccess } from '../src/middlewares/document.access.middleware.js';
+import { DocumentWorkflowStatus, VALID_STATUSES } from '../src/models/document.workflow.status.model.js';
+import {
+  createDocumentWorkflowStatus,
+  listDocumentWorkflowStatuses,
+  getDocumentWorkflowStatusById,
+  getDocumentStatusHistory,
+  updateDocumentWorkflowStatus,
+  deleteDocumentWorkflowStatus,
+  verifyUserDocumentAccess,
+} from '../src/controllers/document.workflow.status.controller.js';
 
 describe('Project Tests', () => {
   it('should generate and verify JWT token', () => {
@@ -2865,5 +2886,629 @@ describe('Project Tests', () => {
     assert.strictEqual(projectStage.$project.fileTitle, '$title');
     assert.strictEqual(projectStage.$project.fileSubjectLine, '$subject');
     assert.strictEqual(projectStage.$project.fileNumber, '$fileNumber');
+  });
+
+  it('should validate Ministry model schema definition, indexes, and relations', () => {
+    assert.ok(Ministry.schema.paths.name, 'Ministry must have name field');
+    assert.strictEqual(Ministry.schema.paths.name.instance, 'String');
+    assert.ok(Ministry.schema.paths.code, 'Ministry must have code field');
+    assert.strictEqual(Ministry.schema.paths.code.instance, 'String');
+    assert.ok(Ministry.schema.paths.description, 'Ministry must have description field');
+    assert.ok(Ministry.schema.paths.headOfMinistry, 'Ministry must have headOfMinistry field');
+    assert.ok(Ministry.schema.paths.createdBy, 'Ministry must have createdBy field');
+
+    // Verify Department model has ministryId
+    assert.ok(Department.schema.paths.ministryId, 'Department must have ministryId');
+    assert.strictEqual(Department.schema.paths.ministryId.options.ref, 'Ministry');
+
+    // Verify User model has ministry_admin role and ministryId
+    assert.ok(User.schema.paths.role.enumValues.includes('ministry_admin'), 'User roles must include ministry_admin');
+    assert.ok(User.schema.paths.ministryId, 'User must have ministryId');
+    assert.strictEqual(User.schema.paths.ministryId.options.ref, 'Ministry');
+  });
+
+  it('should verify Ministry controllers: create, list, get, update, and delete', async () => {
+    assert.strictEqual(typeof createMinistry, 'function');
+    assert.strictEqual(typeof listMinistries, 'function');
+    assert.strictEqual(typeof getMinistryById, 'function');
+    assert.strictEqual(typeof updateMinistry, 'function');
+    assert.strictEqual(typeof deleteMinistry, 'function');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    // 1. createMinistry: validation error on missing name/code
+    await createMinistry({ body: { name: '' }, user: { id: '650c1f1e1f1e1f1e1f1e1001' } }, mockRes, () => {});
+    assert.strictEqual(statusCode, 400);
+    assert.strictEqual(responseData.success, false);
+
+    // 2. createMinistry: successful creation
+    const origFindOne = Ministry.findOne;
+    const origCreate = Ministry.create;
+    Ministry.findOne = async () => null;
+    Ministry.create = async (doc) => ({ _id: '650c1f1e1f1e1f1e1f1e2001', ...doc });
+
+    await createMinistry(
+      {
+        body: { name: 'Ministry of Railways', code: 'MOR', description: 'Rail transport' },
+        user: { id: '650c1f1e1f1e1f1e1f1e1001' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.code, 'MOR');
+
+    Ministry.findOne = origFindOne;
+    Ministry.create = origCreate;
+
+    // 3. deleteMinistry: rejects when departments belong to it
+    const origDeptCount = Department.countDocuments;
+    const origMinistryFindId = Ministry.findById;
+    Department.countDocuments = async () => 3;
+    Ministry.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e2001', name: 'MOR' });
+
+    await deleteMinistry({ params: { id: '650c1f1e1f1e1f1e1f1e2001' } }, mockRes, () => {});
+    assert.strictEqual(statusCode, 400);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.message.includes('department(s)'));
+
+    Department.countDocuments = origDeptCount;
+    Ministry.findById = origMinistryFindId;
+  });
+
+  it('should verify assignMinistryToDepartment assigns ministryId correctly', async () => {
+    assert.strictEqual(typeof assignMinistryToDepartment, 'function');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    const origDeptFind = Department.findById;
+    const origMinistryFind = Ministry.findById;
+
+    const fakeDept = {
+      _id: '650c1f1e1f1e1f1e1f1e3001',
+      name: 'Civil Engineering',
+      ministryId: null,
+      save: async function () { return this; },
+    };
+
+    Department.findById = (id) => ({
+      ...fakeDept,
+      populate: async () => ({ ...fakeDept, ministryId: { name: 'Ministry of Railways' } }),
+      save: async () => fakeDept,
+    });
+    Ministry.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e2001', name: 'Ministry of Railways' });
+
+    await assignMinistryToDepartment(
+      {
+        params: { id: '650c1f1e1f1e1f1e1f1e3001' },
+        body: { ministryId: '650c1f1e1f1e1f1e1f1e2001' },
+        user: { role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    Department.findById = origDeptFind;
+    Ministry.findById = origMinistryFind;
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.ok(responseData.message.includes('assigned under ministry'));
+  });
+
+  it('should verify createMinistryAdmin creates user with ministry_admin role and ministryId', async () => {
+    assert.strictEqual(typeof createMinistryAdmin, 'function');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    const origMinistryFind = Ministry.findById;
+    const origUserFindOne = User.findOne;
+    const origUserCreate = User.create;
+    const origUserFindById = User.findById;
+
+    Ministry.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e2001', name: 'Ministry of Railways' });
+    User.findOne = async () => null;
+    User.create = async (doc) => ({ _id: '650c1f1e1f1e1f1e1f1e4001', ...doc });
+    User.findById = () => ({
+      populate: async () => ({
+        _id: '650c1f1e1f1e1f1e1f1e4001',
+        name: 'Ministry Admin User',
+        email: 'min.admin@example.com',
+        role: 'ministry_admin',
+        ministryId: { name: 'Ministry of Railways', code: 'MOR' },
+      }),
+    });
+
+    await createMinistryAdmin(
+      {
+        body: {
+          name: 'Ministry Admin User',
+          email: 'min.admin@example.com',
+          password: 'Password123!',
+          ministryId: '650c1f1e1f1e1f1e1f1e2001',
+        },
+        user: { role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    Ministry.findById = origMinistryFind;
+    User.findOne = origUserFindOne;
+    User.create = origUserCreate;
+    User.findById = origUserFindById;
+
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.role, 'ministry_admin');
+    assert.strictEqual(responseData.data.ministryId.code, 'MOR');
+  });
+
+  it('should verify Ministry Admin scoping for department, employee, and document access', async () => {
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    // 1. Ministry Admin creating department automatically gets user's ministryId
+    const origDeptFindOne = Department.findOne;
+    const origDeptCreate = Department.create;
+    const origMinistryFind = Ministry.findById;
+
+    Department.findOne = async () => null;
+    let createdDeptData = null;
+    Department.create = async (doc) => {
+      createdDeptData = doc;
+      return { _id: '650c1f1e1f1e1f1e1f1e3002', ...doc };
+    };
+    Ministry.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e2001', name: 'MOR' });
+
+    await createDepartment(
+      {
+        body: { name: 'Signal Engineering', code: 'SIG' },
+        user: { id: '650c1f1e1f1e1f1e1f1e4001', role: 'ministry_admin', ministryId: '650c1f1e1f1e1f1e1f1e2001' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    Department.findOne = origDeptFindOne;
+    Department.create = origDeptCreate;
+    Ministry.findById = origMinistryFind;
+
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(createdDeptData.ministryId, '650c1f1e1f1e1f1e1f1e2001');
+
+    // 2. Ministry Admin creating employee: rejects if department belongs to another ministry
+    const origDeptFindById = Department.findById;
+    Department.findById = async (id) => ({
+      _id: id,
+      name: 'External Dept',
+      ministryId: '650c1f1e1f1e1f1e1f1e9999', // different ministry
+    });
+
+    await createEmployee(
+      {
+        body: {
+          name: 'Staff One',
+          email: 'staff@example.com',
+          password: 'Password123!',
+          departmentId: '650c1f1e1f1e1f1e1f1e3003',
+        },
+        user: { role: 'ministry_admin', ministryId: '650c1f1e1f1e1f1e1f1e2001' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 403);
+    assert.ok(responseData.message.includes('within your ministry'));
+
+    // 3. checkDocumentAccess allows Ministry Admin for document in their ministry
+    const origDocFindById = Document.findById;
+    Document.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e5001',
+      title: 'Railway Signal Policy',
+      departmentId: '650c1f1e1f1e1f1e1f1e3001',
+    });
+    Department.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e3001',
+      ministryId: '650c1f1e1f1e1f1e1f1e2001',
+    });
+
+    let nextCalled = false;
+    const mockReq = {
+      params: { id: '650c1f1e1f1e1f1e1f1e5001' },
+      user: { id: '650c1f1e1f1e1f1e1f1e4001', role: 'ministry_admin', ministryId: '650c1f1e1f1e1f1e1f1e2001' },
+    };
+
+    const middleware = checkDocumentAccess('canView');
+    await middleware(mockReq, mockRes, () => {
+      nextCalled = true;
+    });
+
+    Document.findById = origDocFindById;
+    Department.findById = origDeptFindById;
+
+    assert.strictEqual(nextCalled, true);
+    assert.ok(mockReq.document);
+    assert.strictEqual(mockReq.userPermission.isMinistryAdmin, true);
+    assert.strictEqual(mockReq.userPermission.canView, true);
+  });
+
+  it('should validate DocumentWorkflowStatus model schema definition, enums, and indexes', () => {
+    assert.ok(DocumentWorkflowStatus.schema.paths.documentId, 'Must have documentId');
+    assert.strictEqual(DocumentWorkflowStatus.schema.paths.documentId.options.ref, 'Document');
+    assert.ok(DocumentWorkflowStatus.schema.paths.employeeId, 'Must have employeeId');
+    assert.strictEqual(DocumentWorkflowStatus.schema.paths.employeeId.options.ref, 'User');
+    assert.ok(DocumentWorkflowStatus.schema.paths.status, 'Must have status');
+    assert.deepStrictEqual(
+      DocumentWorkflowStatus.schema.paths.status.enumValues,
+      ['draft', 'back', 'approve', 'sent', 'receive']
+    );
+    assert.ok(DocumentWorkflowStatus.schema.paths.statusUpdateTime, 'Must have statusUpdateTime');
+    assert.ok(DocumentWorkflowStatus.schema.paths.isCurrent, 'Must have isCurrent');
+    assert.strictEqual(DocumentWorkflowStatus.schema.paths.isCurrent.defaultValue, true);
+    assert.ok(DocumentWorkflowStatus.schema.paths.isPhysicalFileReceived, 'Must have isPhysicalFileReceived');
+    assert.strictEqual(DocumentWorkflowStatus.schema.paths.isPhysicalFileReceived.defaultValue, false);
+    assert.ok(DocumentWorkflowStatus.schema.paths.physicalFileReceivedTime, 'Must have physicalFileReceivedTime');
+    assert.ok(DocumentWorkflowStatus.schema.paths.remarks, 'Must have remarks');
+    assert.ok(DocumentWorkflowStatus.schema.paths.departmentId, 'Must have departmentId');
+  });
+
+  it('should verify createDocumentWorkflowStatus enforces document access and creates record', async () => {
+    assert.strictEqual(typeof createDocumentWorkflowStatus, 'function');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    const origFwdFindOne = DocumentForward.findOne;
+    const origPermFindOne = DocumentPermission.findOne;
+    DocumentForward.findOne = async () => null;
+    DocumentPermission.findOne = async () => null;
+
+    // 1. Validation error on missing documentId or status
+    await createDocumentWorkflowStatus({ body: {} }, mockRes, () => {});
+    assert.strictEqual(statusCode, 400);
+    assert.strictEqual(responseData.success, false);
+
+    // 2. Validation error on invalid status
+    await createDocumentWorkflowStatus(
+      { body: { documentId: '650c1f1e1f1e1f1e1f1e5001', status: 'invalid_status' } },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseData.message.includes('Invalid status'));
+
+    // 3. Document not found
+    const origDocFindById = Document.findById;
+    Document.findById = async () => null;
+    await createDocumentWorkflowStatus(
+      { body: { documentId: '650c1f1e1f1e1f1e1f1e5001', status: 'draft' } },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 404);
+
+    // 4. Employee lacks permission to access document -> 403 Forbidden
+    Document.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e5001',
+      title: 'Confidential Finance Audit',
+      departmentId: '650c1f1e1f1e1f1e1f1e9999',
+      accessControl: 'department_only',
+    });
+
+    await createDocumentWorkflowStatus(
+      {
+        body: { documentId: '650c1f1e1f1e1f1e1f1e5001', status: 'sent' },
+        user: { id: '650c1f1e1f1e1f1e1f1e4001', role: 'employee', departmentId: '650c1f1e1f1e1f1e1f1e3001' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 403);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.message.includes('permission to access'));
+
+    // 5. Authorized employee creates status successfully -> 201 Created
+    Document.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e5001',
+      title: 'Civil Track Modernization',
+      departmentId: '650c1f1e1f1e1f1e1f1e3001',
+      accessControl: 'general',
+    });
+
+    const origStatusUpdateMany = DocumentWorkflowStatus.updateMany;
+    const origStatusCreate = DocumentWorkflowStatus.create;
+    const origStatusFindById = DocumentWorkflowStatus.findById;
+
+    let createdStatusDoc = null;
+    DocumentWorkflowStatus.updateMany = async () => ({ modifiedCount: 1 });
+    DocumentWorkflowStatus.create = async (doc) => {
+      createdStatusDoc = doc;
+      return { _id: '650c1f1e1f1e1f1e1f1e6001', ...doc };
+    };
+    DocumentWorkflowStatus.findById = () => ({
+      populate() {
+        return {
+          populate() {
+            return {
+              populate: async () => ({
+                _id: '650c1f1e1f1e1f1e1f1e6001',
+                documentId: { _id: '650c1f1e1f1e1f1e1f1e5001', title: 'Civil Track Modernization', fileNumber: 'MOR/CIVIL/F-101' },
+                employeeId: { _id: '650c1f1e1f1e1f1e1f1e4001', name: 'Test Officer', employeeId: 'MOR/001' },
+                status: 'receive',
+                remarks: 'Physical file received at desk',
+                isPhysicalFileReceived: true,
+                physicalFileReceivedTime: createdStatusDoc?.physicalFileReceivedTime,
+                isCurrent: true,
+              }),
+            };
+          },
+        };
+      },
+    });
+
+    await createDocumentWorkflowStatus(
+      {
+        body: {
+          documentId: '650c1f1e1f1e1f1e1f1e5001',
+          status: 'receive',
+          remarks: 'Physical file received at desk',
+          isPhysicalFileReceived: true,
+        },
+        user: { id: '650c1f1e1f1e1f1e1f1e4001', role: 'employee', departmentId: '650c1f1e1f1e1f1e1f1e3001' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    Document.findById = origDocFindById;
+    DocumentForward.findOne = origFwdFindOne;
+    DocumentPermission.findOne = origPermFindOne;
+    DocumentWorkflowStatus.updateMany = origStatusUpdateMany;
+    DocumentWorkflowStatus.create = origStatusCreate;
+    DocumentWorkflowStatus.findById = origStatusFindById;
+
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.status, 'receive');
+    assert.strictEqual(responseData.data.isCurrent, true);
+    assert.strictEqual(createdStatusDoc.isPhysicalFileReceived, true);
+    assert.ok(createdStatusDoc.physicalFileReceivedTime instanceof Date);
+  });
+
+  it('should verify DocumentWorkflowStatus controllers: list, getById, history, update, and delete', async () => {
+    assert.strictEqual(typeof listDocumentWorkflowStatuses, 'function');
+    assert.strictEqual(typeof getDocumentWorkflowStatusById, 'function');
+    assert.strictEqual(typeof getDocumentStatusHistory, 'function');
+    assert.strictEqual(typeof updateDocumentWorkflowStatus, 'function');
+    assert.strictEqual(typeof deleteDocumentWorkflowStatus, 'function');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(c) {
+        statusCode = c;
+        return this;
+      },
+      json(d) {
+        responseData = d;
+        return this;
+      },
+    };
+
+    // 1. listDocumentWorkflowStatuses for Super Admin
+    const origCount = DocumentWorkflowStatus.countDocuments;
+    const origFind = DocumentWorkflowStatus.find;
+    const origFindById = DocumentWorkflowStatus.findById;
+
+    DocumentWorkflowStatus.countDocuments = async () => 1;
+    DocumentWorkflowStatus.find = () => ({
+      populate() {
+        return {
+          populate() {
+            return {
+              populate() {
+                return {
+                  sort() {
+                    return {
+                      skip() {
+                        return {
+                          limit: async () => [
+                            {
+                              _id: '650c1f1e1f1e1f1e1f1e6001',
+                              status: 'approve',
+                              isCurrent: true,
+                            },
+                          ],
+                        };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+    });
+
+    await listDocumentWorkflowStatuses(
+      {
+        query: { page: '1', pageSize: '10' },
+        user: { role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.total, 1);
+
+    // 2. getDocumentStatusHistory
+    const origDocFindById = Document.findById;
+    Document.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e5001',
+      title: 'Civil Track Modernization',
+      fileNumber: 'MOR/CIVIL/F-101',
+      departmentId: '650c1f1e1f1e1f1e1f1e3001',
+      accessControl: 'general',
+    });
+
+    DocumentWorkflowStatus.find = () => ({
+      populate() {
+        return {
+          populate() {
+            return {
+              sort: async () => [
+                { _id: '650c1f1e1f1e1f1e1f1e6002', status: 'approve', isCurrent: true },
+                { _id: '650c1f1e1f1e1f1e1f1e6001', status: 'sent', isCurrent: false },
+              ],
+            };
+          },
+        };
+      },
+    });
+
+    await getDocumentStatusHistory(
+      {
+        params: { documentId: '650c1f1e1f1e1f1e1f1e5001' },
+        user: { role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(responseData.data.totalHistory, 2);
+    assert.strictEqual(responseData.data.document.currentStatus, 'approve');
+
+    // 3. updateDocumentWorkflowStatus
+    const fakeStatus = {
+      _id: '650c1f1e1f1e1f1e1f1e6001',
+      employeeId: '650c1f1e1f1e1f1e1f1e4001',
+      status: 'sent',
+      remarks: 'Initial remarks',
+      save: async function () { return this; },
+      populate() {
+        return {
+          populate() {
+            return {
+              populate: async () => ({
+                ...fakeStatus,
+                status: 'receive',
+                remarks: 'Received at desk',
+                isPhysicalFileReceived: fakeStatus.isPhysicalFileReceived,
+                physicalFileReceivedTime: fakeStatus.physicalFileReceivedTime,
+              }),
+            };
+          },
+        };
+      },
+    };
+
+    DocumentWorkflowStatus.findById = () => fakeStatus;
+
+    await updateDocumentWorkflowStatus(
+      {
+        params: { id: '650c1f1e1f1e1f1e1f1e6001' },
+        body: { status: 'receive', remarks: 'Received at desk', isPhysicalFileReceived: true },
+        user: { id: '650c1f1e1f1e1f1e1f1e4001', role: 'employee' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+    assert.strictEqual(fakeStatus.isPhysicalFileReceived, true);
+    assert.ok(fakeStatus.physicalFileReceivedTime instanceof Date);
+    assert.strictEqual(responseData.success, true);
+
+    // 4. deleteDocumentWorkflowStatus
+    const origFindByIdAndDelete = DocumentWorkflowStatus.findByIdAndDelete;
+    DocumentWorkflowStatus.findById = async () => ({
+      _id: '650c1f1e1f1e1f1e1f1e6001',
+      employeeId: '650c1f1e1f1e1f1e1f1e4001',
+      isCurrent: true,
+      documentId: '650c1f1e1f1e1f1e1f1e5001',
+    });
+    DocumentWorkflowStatus.findByIdAndDelete = async () => ({ _id: '650c1f1e1f1e1f1e1f1e6001' });
+    DocumentWorkflowStatus.findOne = () => ({
+      sort: async () => null,
+    });
+
+    await deleteDocumentWorkflowStatus(
+      {
+        params: { id: '650c1f1e1f1e1f1e1f1e6001' },
+        user: { id: '650c1f1e1f1e1f1e1f1e4001', role: 'employee' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(responseData.success, true);
+
+    DocumentWorkflowStatus.countDocuments = origCount;
+    DocumentWorkflowStatus.find = origFind;
+    DocumentWorkflowStatus.findById = origFindById;
+    DocumentWorkflowStatus.findByIdAndDelete = origFindByIdAndDelete;
+    Document.findById = origDocFindById;
   });
 });

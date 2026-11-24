@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { User } from '../models/user.model.js';
 import { Department } from '../models/department.model.js';
+import { Ministry } from '../models/ministry.model.js';
 import { Document } from '../models/document.model.js';
 import { DocumentForward } from '../models/document.forward.model.js';
 import { DocumentPermission } from '../models/document.permission.model.js';
@@ -9,6 +10,108 @@ import { getPaginationParams, formatPaginatedResponse } from '../utils/paginatio
 import { sendAccountCreatedEmail } from '../utils/mail.util.js';
 import { generateNextEmployeeId } from '../utils/user.util.js';
 import { isValidEmail, normalizeEmail, isValidPhone, normalizePhone, isValidObjectId } from '../utils/validator.util.js';
+
+/**
+ * Create Ministry Admin (Super Admin only)
+ * Route: POST /api/users/ministry-admins
+ */
+export const createMinistryAdmin = async (req, res, next) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      ministryId,
+      phone,
+      designation,
+      isAuthorizedOfficer,
+    } = req.body;
+
+    if (!name || !email || !password || !ministryId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, email, password, and ministryId are required',
+      });
+    }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address (e.g. admin@example.com)',
+      });
+    }
+
+    if (!isValidObjectId(ministryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid ministryId format',
+      });
+    }
+
+    if (phone && !isValidPhone(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid 10-digit mobile number',
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+
+    // Verify ministry exists
+    const ministry = await Ministry.findById(ministryId);
+    if (!ministry) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ministry not found',
+      });
+    }
+
+    // Check if email already registered
+    const existing = await User.findOne({ email: normalizedEmail });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: 'A user with this email already exists',
+      });
+    }
+
+    const admin = await User.create({
+      name: name.trim(),
+      email: normalizedEmail,
+      password,
+      role: 'ministry_admin',
+      ministryId,
+      departmentId: null,
+      phone: phone ? normalizePhone(phone) : '',
+      designation: designation || 'Ministry Administrator',
+      isAuthorizedOfficer: isAuthorizedOfficer !== undefined ? Boolean(isAuthorizedOfficer) : true,
+    });
+
+    try {
+      await sendAccountCreatedEmail({
+        email: admin.email,
+        name: admin.name,
+        userId: admin._id,
+        employeeId: admin.employeeId || '',
+        password,
+        role: admin.role,
+        departmentName: ministry.name,
+      });
+    } catch (mailError) {
+      console.error('Failed to send welcome email to ministry admin:', mailError.message);
+    }
+
+    const populated = await User.findById(admin._id).populate('ministryId', 'name code description');
+
+    res.status(201).json({
+      success: true,
+      message: `Ministry Admin created successfully for ${ministry.name}`,
+      data: populated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const createDepartmentAdmin = async (req, res, next) => {
   try {
@@ -61,6 +164,16 @@ export const createDepartmentAdmin = async (req, res, next) => {
         success: false,
         message: 'Department not found',
       });
+    }
+
+    // Ministry Admin can only create Department Admins for departments within their ministry
+    if (req.user?.role === 'ministry_admin') {
+      if (!req.user.ministryId || department.ministryId?.toString() !== req.user.ministryId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: You can only create Department Admins for departments within your ministry',
+        });
+      }
     }
 
     // Check if email already registered
@@ -123,7 +236,9 @@ export const createDepartmentAdmin = async (req, res, next) => {
 
 export const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).populate('departmentId', 'name code description');
+    const user = await User.findById(req.user.id)
+      .populate('departmentId', 'name code description')
+      .populate('ministryId', 'name code description');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -202,6 +317,23 @@ export const superAdminUpdatePermissions = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    // Ministry Admin can only update permissions of users within their ministry departments
+    if (req.user.role === 'ministry_admin') {
+      if (!user.departmentId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: You can only update permissions for users within your ministry departments',
+        });
+      }
+      const dept = await Department.findById(user.departmentId);
+      if (!dept || dept.ministryId?.toString() !== req.user.ministryId?.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: You can only update permissions for users within your ministry departments',
+        });
+      }
+    }
+
     // Build dot-notation update for nested permissions
     const permissionUpdate = {};
     for (const [key, value] of Object.entries(updates)) {
@@ -215,7 +347,9 @@ export const superAdminUpdatePermissions = async (req, res, next) => {
       userId,
       { $set: permissionUpdate },
       { new: true, runValidators: true }
-    ).populate('departmentId', 'name code');
+    )
+      .populate('departmentId', 'name code')
+      .populate('ministryId', 'name code');
 
     res.status(200).json({
       success: true,
@@ -303,9 +437,18 @@ export const getUserCounts = async (req, res, next) => {
       ? new mongoose.Types.ObjectId(currentUserId)
       : currentUserId;
 
+    let userMatch = {};
+    let deptFilter = {};
+    if (req.user?.role === 'ministry_admin' && req.user.ministryId) {
+      const deptIds = await Department.find({ ministryId: req.user.ministryId }).distinct('_id');
+      userMatch = { departmentId: { $in: deptIds } };
+      deptFilter = { ministryId: req.user.ministryId };
+    }
+
     // Single-roundtrip aggregation pipeline with $facet: consolidates 4 user count queries into 1
     const [userCountsResult, totalDepartments] = await Promise.all([
       User.aggregate([
+        { $match: userMatch },
         {
           $facet: {
             totalUsers: [{ $count: 'count' }],
@@ -321,7 +464,7 @@ export const getUserCounts = async (req, res, next) => {
               {
                 $match: {
                   _id: { $ne: currentAdminId },
-                  role: { $in: ['super_admin', 'department_admin'] },
+                  role: { $in: ['super_admin', 'ministry_admin', 'department_admin'] },
                 },
               },
               { $count: 'count' },
@@ -329,7 +472,7 @@ export const getUserCounts = async (req, res, next) => {
           },
         },
       ]),
-      Department.countDocuments(),
+      Department.countDocuments(deptFilter),
     ]);
 
     const stats = userCountsResult?.[0] || {};
@@ -375,6 +518,21 @@ export const listUsers = async (req, res, next) => {
 
     const query = {};
 
+    // Filter by Ministry for Ministry Admin
+    if (req.user?.role === 'ministry_admin' && req.user.ministryId) {
+      const ministryDeptIds = await Department.find({ ministryId: req.user.ministryId }).distinct('_id');
+      if (departmentId) {
+        if (!ministryDeptIds.some((id) => id.toString() === departmentId.toString())) {
+          return res.status(200).json(formatPaginatedResponse({ total: 0, page, pageSize, data: [] }));
+        }
+        query.departmentId = departmentId;
+      } else {
+        query.departmentId = { $in: ministryDeptIds };
+      }
+    } else if (departmentId && mongoose.Types.ObjectId.isValid(departmentId)) {
+      query.departmentId = departmentId;
+    }
+
     // 1. Text Search across name, employee ID, email, designation
     const searchText = (search || q || '').trim();
     if (searchText) {
@@ -387,17 +545,12 @@ export const listUsers = async (req, res, next) => {
       ];
     }
 
-    // 2. Department Filter
-    if (departmentId && mongoose.Types.ObjectId.isValid(departmentId)) {
-      query.departmentId = departmentId;
-    }
-
     // 3. Admin / Employee / Specific Role Filter
     if (onlyAdmins === 'true' || adminOnly === 'true') {
       query.role = { $in: ['super_admin', 'department_admin'] };
     } else if (onlyEmployees === 'true' || employeesOnly === 'true') {
       query.role = 'employee';
-    } else if (role && ['super_admin', 'department_admin', 'employee'].includes(role.toLowerCase())) {
+    } else if (role && ['super_admin', 'ministry_admin', 'department_admin', 'employee'].includes(role.toLowerCase())) {
       query.role = role.toLowerCase();
     }
 
@@ -436,7 +589,10 @@ export const listUsers = async (req, res, next) => {
     const [total, users] = await Promise.all([
       User.countDocuments(query),
       User.find(query)
-        .populate('departmentId', 'name code')
+        .populate([
+          { path: 'departmentId', select: 'name code' },
+          { path: 'ministryId', select: 'name code' },
+        ])
         .sort(sort)
         .skip(skip)
         .limit(pageSize),

@@ -46,12 +46,26 @@ export const createEmployee = async (req, res, next) => {
     // Determine target department
     let targetDeptId = req.user.departmentId;
 
-    // Super admin can specify a departmentId explicitly
+    // Super admin or Ministry admin can specify a departmentId explicitly
     if (req.user.role === 'super_admin') {
       if (!departmentId) {
         return res.status(400).json({
           success: false,
           message: 'Super Admin must specify a departmentId to assign the employee',
+        });
+      }
+      if (!isValidObjectId(departmentId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid departmentId format',
+        });
+      }
+      targetDeptId = departmentId;
+    } else if (req.user.role === 'ministry_admin') {
+      if (!departmentId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Ministry Admin must specify a departmentId to assign the employee',
         });
       }
       if (!isValidObjectId(departmentId)) {
@@ -77,6 +91,16 @@ export const createEmployee = async (req, res, next) => {
         success: false,
         message: 'Department not found',
       });
+    }
+
+    // Ministry Admin can only create employees for departments within their ministry
+    if (req.user.role === 'ministry_admin') {
+      if (!req.user.ministryId || dept.ministryId?.toString() !== req.user.ministryId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: You can only create employees for departments within your ministry',
+        });
+      }
     }
 
     const normalizedEmail = normalizeEmail(email);
@@ -147,6 +171,18 @@ export const listEmployees = async (req, res, next) => {
       filter.departmentId = isValidObjectId(req.user.departmentId)
         ? new mongoose.Types.ObjectId(req.user.departmentId)
         : req.user.departmentId;
+    } else if (req.user.role === 'ministry_admin' && req.user.ministryId) {
+      const ministryDeptIds = await Department.find({ ministryId: req.user.ministryId }).distinct('_id');
+      if (req.query.departmentId) {
+        if (!ministryDeptIds.some((id) => id.toString() === req.query.departmentId.toString())) {
+          return res.status(200).json(formatPaginatedResponse({ total: 0, page: 1, pageSize: 20, data: [] }));
+        }
+        filter.departmentId = isValidObjectId(req.query.departmentId)
+          ? new mongoose.Types.ObjectId(req.query.departmentId)
+          : req.query.departmentId;
+      } else {
+        filter.departmentId = { $in: ministryDeptIds.map((id) => new mongoose.Types.ObjectId(id)) };
+      }
     } else if (req.query.departmentId) {
       // Super admin can filter by department if provided in query
       filter.departmentId = isValidObjectId(req.query.departmentId)

@@ -12,8 +12,8 @@ export const checkPermission = (permissionKey) => {
       });
     }
 
-    // Super Admin has unrestricted access across all actions
-    if (req.user.role === 'super_admin') {
+    // Super Admin and Ministry Admin have unrestricted access across user-level actions
+    if (req.user.role === 'super_admin' || req.user.role === 'ministry_admin') {
       return next();
     }
 
