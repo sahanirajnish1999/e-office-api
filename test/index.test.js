@@ -3982,3 +3982,208 @@ describe('Project Tests', () => {
     Notification.updateMany = origNotifUpdateMany;
   });
 });
+
+describe('Email Template System & HTML Security Sanitizer', () => {
+  it('blocks malicious HTML tags, inline event handlers, JS URIs, and obfuscated entities', async () => {
+    const { validateAndSanitizeEmailHtml } = await import('../src/utils/html.sanitizer.util.js');
+
+    const scriptRes = validateAndSanitizeEmailHtml('<div>Hello</div><script>alert(1)</script>');
+    assert.strictEqual(scriptRes.valid, false);
+    assert.ok(scriptRes.violations.some((v) => v.includes('<script>')));
+
+    const onClickRes = validateAndSanitizeEmailHtml('<a href="https://example.com" onclick="steal()">Click</a>');
+    assert.strictEqual(onClickRes.valid, false);
+    assert.ok(onClickRes.violations.some((v) => v.includes('onclick')));
+
+    const jsUriRes = validateAndSanitizeEmailHtml('<a href="javascript:alert(1)">Link</a>');
+    assert.strictEqual(jsUriRes.valid, false);
+
+    const entityBypassRes = validateAndSanitizeEmailHtml('<a href="&#x6a;avascript:alert(1)">Link</a>');
+    assert.strictEqual(entityBypassRes.valid, false);
+
+    const iframeRes = validateAndSanitizeEmailHtml('<iframe src="https://evil.com"></iframe>');
+    assert.strictEqual(iframeRes.valid, false);
+
+    const cssExprRes = validateAndSanitizeEmailHtml('<div style="width: expression(alert(1))">Hi</div>');
+    assert.strictEqual(cssExprRes.valid, false);
+
+    const safeHtml =
+      '<div style="font-family: Arial;"><img src="{{organization-logo-image}}" alt="Logo" /><h2>Hello {{username}}</h2><p>IP: [ip address]</p></div>';
+    const safeRes = validateAndSanitizeEmailHtml(safeHtml);
+    assert.strictEqual(safeRes.valid, true);
+    assert.strictEqual(safeRes.violations.length, 0);
+  });
+
+  it('renders both {{...}} and [...] placeholders and escapes injected HTML values', async () => {
+    const { renderTemplateString, extractPlaceholders } = await import(
+      '../src/utils/email.template.util.js'
+    );
+
+    const tpl =
+      '<p>User: {{username}}, Email: [email], IP: {{ip address}}, Sender: [[sender-user-name]], Logo: {{organization-logo-image}}, Date: {{current-date}}</p>';
+    const keys = extractPlaceholders(tpl);
+    assert.ok(keys.includes('username'));
+    assert.ok(keys.includes('email'));
+    assert.ok(keys.includes('ip-address'));
+    assert.ok(keys.includes('sender-user-name'));
+    assert.ok(keys.includes('organization-logo-image'));
+    assert.ok(keys.includes('current-date'));
+
+    const rendered = renderTemplateString(tpl, {
+      username: '<script>xss</script>',
+      email: 'ankit@example.com',
+      'ip address': '10.0.0.5',
+      'sender-user-name': 'Super Admin',
+      'organization-logo-image': 'https://example.com/logo.png',
+    });
+
+    assert.ok(rendered.includes('&lt;script&gt;xss&lt;/script&gt;'));
+    assert.ok(rendered.includes('ankit@example.com'));
+    assert.ok(rendered.includes('10.0.0.5'));
+    assert.ok(rendered.includes('Super Admin'));
+    assert.ok(rendered.includes('https://example.com/logo.png'));
+  });
+
+  it('allows Super Admin to create, preview, activate, and delete HTML email templates while rejecting JS', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { EmailTemplate } = await import('../src/models/email.template.model.js');
+    const {
+      createEmailTemplate,
+      previewEmailTemplate,
+      activateEmailTemplate,
+      deleteEmailTemplate,
+    } = await import('../src/controllers/email.template.controller.js');
+
+    const origCreate = EmailTemplate.create;
+    const origUpdateMany = EmailTemplate.updateMany;
+    const origFindById = EmailTemplate.findById;
+    const origFindByIdAndDelete = EmailTemplate.findByIdAndDelete;
+
+    let savedDoc = null;
+    EmailTemplate.updateMany = async () => ({ modifiedCount: 0 });
+    EmailTemplate.create = async (data) => {
+      savedDoc = {
+        ...data,
+        _id: '650c1f1e1f1e1f1e1f1e9901',
+        save: async () => savedDoc,
+      };
+      return savedDoc;
+    };
+    EmailTemplate.findById = async () => savedDoc;
+    EmailTemplate.findByIdAndDelete = async () => savedDoc;
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    // 1. Reject template containing <script>
+    await createEmailTemplate(
+      {
+        body: {
+          name: 'Malicious Template',
+          eventKey: 'account_created',
+          subject: 'Hello {{username}}',
+          html: '<div>Hi {{username}}</div><script>fetch("http://evil")</script>',
+        },
+        user: { _id: '650c1f1e1f1e1f1e1f1e0001', name: 'Super Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.violations.length > 0);
+
+    // 2. Create clean template
+    await createEmailTemplate(
+      {
+        body: {
+          name: 'Clean Welcome Template',
+          eventKey: 'account_created',
+          subject: 'Welcome {{username}}',
+          html: '<div><img src="{{organization-logo-image}}" /><h1>Welcome {{username}}</h1><p>Email: [email] | IP: {{ip address}}</p></div>',
+        },
+        user: { _id: '650c1f1e1f1e1f1e1f1e0001', name: 'Super Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 201);
+    assert.strictEqual(responseData.success, true);
+    assert.ok(fs.existsSync(path.resolve(process.cwd(), savedDoc.htmlFilePath)));
+
+    // 3. Preview template
+    await previewEmailTemplate(
+      {
+        params: { id: savedDoc._id },
+        body: { variables: { username: 'Ankit', email: 'ankit@gov.in' } },
+        ip: '192.168.1.10',
+        user: { name: 'Super Admin' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 200);
+    assert.ok(responseData.data.html.includes('Welcome Ankit'));
+    assert.ok(responseData.data.html.includes('192.168.1.10'));
+
+    // 4. Activate template
+    await activateEmailTemplate(
+      {
+        params: { id: savedDoc._id },
+        user: { _id: '650c1f1e1f1e1f1e1f1e0001' },
+      },
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(savedDoc.isActive, true);
+
+    // 5. Delete template and verify file removal
+    const fileToCheck = path.resolve(process.cwd(), savedDoc.htmlFilePath);
+    await deleteEmailTemplate({ params: { id: savedDoc._id } }, mockRes, () => {});
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(fs.existsSync(fileToCheck), false);
+
+    EmailTemplate.create = origCreate;
+    EmailTemplate.updateMany = origUpdateMany;
+    EmailTemplate.findById = origFindById;
+    EmailTemplate.findByIdAndDelete = origFindByIdAndDelete;
+  });
+
+  it('sends emails using default .html template files when no custom DB template is active', async () => {
+    const { sendAccountCreatedEmail, sendPasswordResetEmail } = await import(
+      '../src/utils/mail.util.js'
+    );
+
+    const accResult = await sendAccountCreatedEmail({
+      email: 'testuser@example.com',
+      name: 'Test User',
+      employeeId: 'MOR/ENG/999',
+      password: 'Password123!',
+      role: 'employee',
+      departmentName: 'Engineering',
+      ipAddress: '127.0.0.1',
+      senderUserName: 'Super Admin',
+    });
+    assert.ok(accResult.messageId.startsWith('mock-test-message-id-'));
+
+    const resetResult = await sendPasswordResetEmail(
+      'testuser@example.com',
+      'token-xyz',
+      'localhost:3000',
+      { ipAddress: '127.0.0.1' }
+    );
+    assert.ok(resetResult.messageId.startsWith('mock-test-message-id-'));
+  });
+});

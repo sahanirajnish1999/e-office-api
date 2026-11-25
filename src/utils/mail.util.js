@@ -1,7 +1,54 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import mongoose from 'mongoose';
 import nodemailer from 'nodemailer';
 import { appConfig } from '../config/app.config.js';
+import { EmailTemplate } from '../models/email.template.model.js';
+import { renderTemplateString } from './email.template.util.js';
+import { htmlToPlainText } from './html.sanitizer.util.js';
 
 let transporter = null;
+
+const DEFAULT_TEMPLATE_FILES = {
+  account_created: 'account-created.html',
+  password_reset: 'password-reset.html',
+  email_change: 'email-change.html',
+  signature_otp: 'signature-otp.html',
+};
+
+const loadTemplateForEvent = async (eventKey) => {
+  try {
+    if (mongoose.connection?.readyState === 1) {
+      const customTemplate = await EmailTemplate.findOne({ eventKey, isActive: true }).lean();
+      if (customTemplate?.htmlFilePath) {
+        const absPath = path.resolve(process.cwd(), customTemplate.htmlFilePath);
+        if (fs.existsSync(absPath)) {
+          return {
+            subject: customTemplate.subject,
+            html: fs.readFileSync(absPath, 'utf8'),
+            text: customTemplate.textContent || '',
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`Failed to load custom template for ${eventKey}, falling back to default:`, err.message);
+  }
+
+  const defaultFile = DEFAULT_TEMPLATE_FILES[eventKey];
+  if (defaultFile) {
+    const defaultPath = path.resolve(process.cwd(), 'src/templates/emails', defaultFile);
+    if (fs.existsSync(defaultPath)) {
+      return {
+        subject: null,
+        html: fs.readFileSync(defaultPath, 'utf8'),
+        text: '',
+      };
+    }
+  }
+
+  return null;
+};
 
 export const getMailTransporter = async () => {
   if (transporter) return transporter;
@@ -70,47 +117,67 @@ export const sendMail = async ({ to, subject, text, html }) => {
 /**
  * Send password reset verification email
  */
-export const sendPasswordResetEmail = async (email, resetToken, host) => {
+export const sendPasswordResetEmail = async (email, resetToken, host, context = {}) => {
   const resetUrl = `http://${host}/api/auth/reset-password/${resetToken}`;
+  const variables = {
+    email,
+    'reset-token': resetToken,
+    'reset-url': resetUrl,
+    'ip-address': context.ipAddress || 'N/A',
+    'sender-user-name': context.senderUserName || 'Enterprise Management System',
+  };
 
-  const text = `You requested a password reset. Use this token to reset your password within 15 minutes: ${resetToken}\nOr POST to: ${resetUrl}`;
-  const html = `
-    <h2>Password Reset Request</h2>
-    <p>You recently requested to reset your password. Use the token below or send a POST request with your new password.</p>
-    <p><b>Reset Token:</b> <code>${resetToken}</code></p>
-    <p>This token is valid for 15 minutes.</p>
-    <p>If you did not request this, please ignore this email.</p>
-  `;
+  const loaded = await loadTemplateForEvent('password_reset');
+  const subject = loaded?.subject
+    ? renderTemplateString(loaded.subject, variables, { escapeHtmlValues: false })
+    : 'Password Reset Verification';
+  const html = loaded?.html
+    ? renderTemplateString(loaded.html, variables, { escapeHtmlValues: true })
+    : `<h2>Password Reset Request</h2><p>Reset Token: <code>${resetToken}</code></p>`;
+  const text = loaded?.text
+    ? renderTemplateString(loaded.text, variables, { escapeHtmlValues: false })
+    : `You requested a password reset. Use this token to reset your password within 15 minutes: ${resetToken}\nOr POST to: ${resetUrl}`;
 
-  return sendMail({
-    to: email,
-    subject: 'Password Reset Verification',
-    text,
-    html,
-  });
+  return sendMail({ to: email, subject, text, html });
 };
 
 /**
  * Send email change decision notification
  */
-export const sendEmailChangeNotification = async (recipientEmail, status, requestedEmail, note = '') => {
+export const sendEmailChangeNotification = async (
+  recipientEmail,
+  status,
+  requestedEmail,
+  note = '',
+  context = {}
+) => {
   const isApproved = status === 'approved';
-  const subject = `Email Change Request ${isApproved ? 'Approved' : 'Rejected'}`;
-  const text = isApproved
+  const statusLabel = isApproved ? 'Approved' : 'Rejected';
+  const defaultMessage = isApproved
     ? `Your request to change your email address to ${requestedEmail} has been approved by the Super Admin.`
     : `Your request to change your email address to ${requestedEmail} was rejected by the Super Admin.${note ? ` Reason: ${note}` : ''}`;
 
-  const html = `
-    <h2>Email Change Request ${isApproved ? 'Approved ✅' : 'Rejected ❌'}</h2>
-    <p>${text}</p>
-  `;
+  const variables = {
+    email: recipientEmail,
+    status: statusLabel,
+    message: defaultMessage,
+    remarks: note,
+    'ip-address': context.ipAddress || 'N/A',
+    'sender-user-name': context.senderUserName || 'Super Admin',
+  };
 
-  return sendMail({
-    to: recipientEmail,
-    subject,
-    text,
-    html,
-  });
+  const loaded = await loadTemplateForEvent('email_change');
+  const subject = loaded?.subject
+    ? renderTemplateString(loaded.subject, variables, { escapeHtmlValues: false })
+    : `Email Change Request ${statusLabel}`;
+  const html = loaded?.html
+    ? renderTemplateString(loaded.html, variables, { escapeHtmlValues: true })
+    : `<h2>Email Change Request ${statusLabel}</h2><p>${defaultMessage}</p>`;
+  const text = loaded?.text
+    ? renderTemplateString(loaded.text, variables, { escapeHtmlValues: false })
+    : defaultMessage;
+
+  return sendMail({ to: recipientEmail, subject, text, html });
 };
 
 /**
@@ -124,78 +191,62 @@ export const sendAccountCreatedEmail = async ({
   password,
   role,
   departmentName,
+  ipAddress,
+  senderUserName,
 }) => {
   const displayUserId = employeeId || (userId ? userId.toString() : email);
-  const subject = 'Your Account Has Been Created - Login Credentials';
-  const text = `Hello ${name || 'User'},\n\nYour account has been created successfully.\n\nHere are your login credentials:\nUser ID: ${displayUserId}\nLogin Email: ${email}\nPassword: ${password}\nRole: ${role || 'User'}${departmentName ? `\nDepartment: ${departmentName}` : ''}\n\nPlease keep your credentials secure and change your password after initial login.\n\nBest regards,\nEnterprise Management System`;
+  const variables = {
+    username: name || 'User',
+    email,
+    'user-id': displayUserId,
+    password,
+    role: role || 'User',
+    department: departmentName || 'N/A',
+    'ip-address': ipAddress || 'N/A',
+    'sender-user-name': senderUserName || 'Enterprise Management System',
+  };
 
-  const html = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-      <div style="background-color: #1a365d; color: #ffffff; padding: 20px; text-align: center;">
-        <h2 style="margin: 0;">Account Created Successfully</h2>
-      </div>
-      <div style="padding: 24px;">
-        <p>Dear <b>${name || 'User'}</b>,</p>
-        <p>Welcome! Your official account has been created. Below are your account details and login credentials:</p>
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #f7fafc; border-radius: 6px; overflow: hidden;">
-          <tr>
-            <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; font-weight: bold; width: 35%;">User ID:</td>
-            <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7;"><code style="background: #edf2f7; padding: 2px 6px; border-radius: 4px; font-size: 14px;">${displayUserId}</code></td>
-          </tr>
-          <tr>
-            <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; font-weight: bold;">Login Email:</td>
-            <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7;">${email}</td>
-          </tr>
-          <tr>
-            <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; font-weight: bold;">Password:</td>
-            <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7;"><code style="background: #edf2f7; padding: 2px 6px; border-radius: 4px; font-size: 14px; font-weight: bold; color: #c53030;">${password}</code></td>
-          </tr>
-          ${role ? `<tr><td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; font-weight: bold;">Role:</td><td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7;">${role}</td></tr>` : ''}
-          ${departmentName ? `<tr><td style="padding: 12px 16px; font-weight: bold;">Department:</td><td style="padding: 12px 16px;">${departmentName}</td></tr>` : ''}
-        </table>
-        <div style="background-color: #fffaf0; border-left: 4px solid #dd6b20; padding: 12px; margin: 16px 0; font-size: 13px; color: #7b341e;">
-          <b>Security Notice:</b> Please keep your password confidential and consider changing it upon your initial login.
-        </div>
-        <p style="margin-top: 24px; font-size: 13px; color: #718096;">If you believe this account was created in error, please contact your administrator immediately.</p>
-      </div>
-    </div>
-  `;
+  const loaded = await loadTemplateForEvent('account_created');
+  const subject = loaded?.subject
+    ? renderTemplateString(loaded.subject, variables, { escapeHtmlValues: false })
+    : 'Your Account Has Been Created - Login Credentials';
+  const html = loaded?.html
+    ? renderTemplateString(loaded.html, variables, { escapeHtmlValues: true })
+    : htmlToPlainText('');
+  const text = loaded?.text
+    ? renderTemplateString(loaded.text, variables, { escapeHtmlValues: false })
+    : `Hello ${name || 'User'},\n\nYour account has been created successfully.\n\nHere are your login credentials:\nUser ID: ${displayUserId}\nLogin Email: ${email}\nPassword: ${password}\nRole: ${role || 'User'}${departmentName ? `\nDepartment: ${departmentName}` : ''}\n\nPlease keep your credentials secure and change your password after initial login.\n\nBest regards,\nEnterprise Management System`;
 
-  return sendMail({
-    to: email,
-    subject,
-    text,
-    html,
-  });
+  return sendMail({ to: email, subject, text, html });
 };
 
 /**
  * Send digital signature verification OTP email
  */
-export const sendSignatureOtpEmail = async (email, otp, documentTitle = 'Official Document') => {
-  const subject = `Digital Signature Verification OTP - ${documentTitle}`;
-  const text = `Your OTP to digitally sign the document "${documentTitle}" is: ${otp}. This code is valid for 10 minutes.\nIf you did not request this signature, please ignore this email.`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
-      <div style="background-color: #1a365d; padding: 20px; color: white; text-align: center;">
-        <h2 style="margin: 0;">Digital Signature Verification</h2>
-      </div>
-      <div style="padding: 24px; color: #2d3748;">
-        <p>You requested to digitally sign the document: <b>${documentTitle}</b>.</p>
-        <p>Use the following 6-digit one-time password (OTP) to complete the verification:</p>
-        <div style="text-align: center; margin: 24px 0;">
-          <span style="font-size: 32px; letter-spacing: 6px; font-weight: bold; background: #ebf8ff; color: #2b6cb0; padding: 12px 24px; border-radius: 8px; border: 1px dashed #3182ce; display: inline-block;">${otp}</span>
-        </div>
-        <p style="font-size: 13px; color: #718096;">This OTP is valid for <b>10 minutes</b>. After verification, your signature will be submitted for administrative review and approval.</p>
-        <p style="font-size: 13px; color: #718096; margin-top: 20px;">If you did not initiate this request, please contact your administrator immediately.</p>
-      </div>
-    </div>
-  `;
+export const sendSignatureOtpEmail = async (
+  email,
+  otp,
+  documentTitle = 'Official Document',
+  context = {}
+) => {
+  const variables = {
+    email,
+    otp,
+    'document-title': documentTitle,
+    'ip-address': context.ipAddress || 'N/A',
+    'sender-user-name': context.senderUserName || 'Enterprise Management System',
+  };
 
-  return sendMail({
-    to: email,
-    subject,
-    text,
-    html,
-  });
+  const loaded = await loadTemplateForEvent('signature_otp');
+  const subject = loaded?.subject
+    ? renderTemplateString(loaded.subject, variables, { escapeHtmlValues: false })
+    : `Digital Signature Verification OTP - ${documentTitle}`;
+  const html = loaded?.html
+    ? renderTemplateString(loaded.html, variables, { escapeHtmlValues: true })
+    : `<h2>Digital Signature Verification</h2><p>OTP: <b>${otp}</b></p>`;
+  const text = loaded?.text
+    ? renderTemplateString(loaded.text, variables, { escapeHtmlValues: false })
+    : `Your OTP to digitally sign the document "${documentTitle}" is: ${otp}. This code is valid for 10 minutes.\nIf you did not request this signature, please ignore this email.`;
+
+  return sendMail({ to: email, subject, text, html });
 };

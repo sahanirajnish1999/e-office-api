@@ -15,4 +15,5 @@ export const appConfig = {
   },
   uploadDir: process.env.UPLOAD_DIR || 'uploads',
   employeeIdPrefix: (process.env.EMPLOYEE_ID_PREFIX || 'MOR').trim().toUpperCase(),
+  orgLogoUrl: process.env.ORG_LOGO_URL || '',
 };

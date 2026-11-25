@@ -11,6 +11,7 @@ import documentStickyRoutes from './document.sticky.routes.js';
 import virtualStickyRoutes from './virtual.sticky.routes.js';
 import notificationRoutes from './notification.routes.js';
 import documentWorkflowStatusRoutes from './document.workflow.status.routes.js';
+import emailTemplateRoutes from './email.template.routes.js';
 
 const router = Router();
 
@@ -26,5 +27,6 @@ router.use('/stickies', documentStickyRoutes);
 router.use('/virtual-stickies', virtualStickyRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/mail', mailRoutes);
+router.use('/email-templates', emailTemplateRoutes);
 
 export default router;
