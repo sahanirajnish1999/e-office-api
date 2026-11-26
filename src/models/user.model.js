@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { generateRandomToken, hashToken } from '../utils/crypto.util.js';
+import { isValidPhone, normalizePhone } from '../utils/validator.util.js';
 
 const userSchema = new mongoose.Schema(
   {
@@ -53,13 +54,13 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: '',
+      set: (v) => (v ? normalizePhone(v) : ''),
       validate: {
         validator: function (v) {
           if (!v) return true;
-          const cleaned = v.trim().replace(/[\s().-]/g, '');
-          return /^(\+?[1-9]\d{0,3})?[6-9]\d{9}$/.test(cleaned) || /^\+[1-9]\d{9,14}$/.test(cleaned);
+          return isValidPhone(v);
         },
-        message: 'Please provide a valid 10-digit mobile number',
+        message: 'Please provide a valid 10-digit mobile number or E.164 format (e.g. +919876543210)',
       },
     },
     designation: {
@@ -165,6 +166,13 @@ userSchema.methods.createPasswordResetToken = function () {
 
 // Indexes for fast lookups and aggregations
 userSchema.index({ departmentId: 1, role: 1 });
+userSchema.index(
+  { phone: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { phone: { $type: 'string', $gt: '' } },
+  }
+);
 
 export const User = mongoose.model('User', userSchema);
 export default User;

@@ -19,25 +19,27 @@ export const normalizeEmail = (email) => {
 };
 
 /**
+ * Normalizes phone number by converting to string, trimming, and removing spaces, hyphens, and parentheses
+ */
+export const normalizePhone = (phone) => {
+  if (phone === undefined || phone === null) return '';
+  return String(phone).trim().replace(/[\s().-]/g, '');
+};
+
+/**
  * Validates phone number format
  * Accepts standard 10-digit mobile numbers (6-9 start) and international E.164 formats (+91, +1, etc.)
  * Strips whitespace, hyphens, and parentheses before checking
  */
 export const isValidPhone = (phone) => {
-  if (!phone || typeof phone !== 'string') return false;
-  const cleaned = phone.trim().replace(/[\s().-]/g, '');
+  if (phone === undefined || phone === null) return false;
+  if (typeof phone !== 'string' && typeof phone !== 'number') return false;
+  const cleaned = normalizePhone(phone);
   if (!cleaned) return false;
   // Accepts:
   // - 10-digit mobile (starting with 6, 7, 8, or 9): e.g. 9876543210
-  // - International with country code: e.g. +919876543210, +12025550123 (10 to 15 digits total)
-  return /^(\+?[1-9]\d{0,3})?[6-9]\d{9}$/.test(cleaned) || /^\+[1-9]\d{9,14}$/.test(cleaned);
-};
-
-/**
- * Normalizes phone number by removing spaces, hyphens, and parentheses
- */
-export const normalizePhone = (phone) => {
-  return (phone || '').trim().replace(/[\s().-]/g, '');
+  // - International E.164 with '+' prefix and country code: e.g. +919876543210, +12025550123 (8 to 15 digits)
+  return /^[6-9]\d{9}$/.test(cleaned) || /^\+[1-9]\d{7,14}$/.test(cleaned);
 };
 
 /**

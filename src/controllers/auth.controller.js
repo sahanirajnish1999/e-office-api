@@ -30,10 +30,11 @@ export const register = async (req, res, next) => {
       });
     }
 
-    if (phone && !isValidPhone(phone)) {
+    const normalizedPhone = normalizePhone(phone);
+    if (normalizedPhone && !isValidPhone(normalizedPhone)) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide a valid 10-digit mobile number',
+        message: 'Please provide a valid 10-digit mobile number or E.164 format (e.g. +919876543210)',
       });
     }
 
@@ -45,6 +46,16 @@ export const register = async (req, res, next) => {
         success: false,
         message: 'User already exists with this email',
       });
+    }
+
+    if (normalizedPhone) {
+      const existingPhoneUser = await User.findOne({ phone: normalizedPhone });
+      if (existingPhoneUser) {
+        return res.status(409).json({
+          success: false,
+          message: 'A user with this phone number already exists',
+        });
+      }
     }
 
     // Only allow registering the initial Super Admin; further registrations are disabled
@@ -71,7 +82,7 @@ export const register = async (req, res, next) => {
       password,
       role: assignedRole,
       employeeId: finalEmployeeId,
-      phone: phone ? normalizePhone(phone) : '',
+      phone: normalizedPhone,
     });
 
     // Send account creation email with login credentials

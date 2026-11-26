@@ -4187,3 +4187,136 @@ describe('Email Template System & HTML Security Sanitizer', () => {
     assert.ok(resetResult.messageId.startsWith('mock-test-message-id-'));
   });
 });
+
+describe('Phone Uniqueness, Validation & Error Handling', () => {
+  it('validates 10-digit and E.164 phones strictly and defines partial unique index on User.phone', async () => {
+    const { isValidPhone, normalizePhone } = await import('../src/utils/validator.util.js');
+    const { User } = await import('../src/models/user.model.js');
+
+    assert.strictEqual(isValidPhone('9876543210'), true);
+    assert.strictEqual(isValidPhone('98765-43210'), true);
+    assert.strictEqual(isValidPhone('+91 9876543210'), true);
+    assert.strictEqual(isValidPhone(9876543210), true);
+    assert.strictEqual(isValidPhone('1239876543210'), false);
+    assert.strictEqual(isValidPhone('12345'), false);
+    assert.strictEqual(normalizePhone(' +91 (987) 654-3210 '), '+919876543210');
+
+    const indexes = User.schema.indexes();
+    const phoneIndex = indexes.find(([fields]) => fields.phone === 1);
+    assert.ok(phoneIndex, 'User schema must define an index on phone');
+    assert.strictEqual(phoneIndex[1].unique, true);
+    assert.deepStrictEqual(phoneIndex[1].partialFilterExpression, {
+      phone: { $type: 'string', $gt: '' },
+    });
+  });
+
+  it('rejects duplicate phone numbers with 409 Conflict in createEmployee and register', async () => {
+    const { User } = await import('../src/models/user.model.js');
+    const { Department } = await import('../src/models/department.model.js');
+    const { createEmployee } = await import('../src/controllers/employee.controller.js');
+    const { register } = await import('../src/controllers/auth.controller.js');
+
+    const origUserFindOne = User.findOne;
+    const origDeptFindById = Department.findById;
+
+    Department.findById = async () => ({ _id: '650c1f1e1f1e1f1e1f1e2001', code: 'ENG', name: 'Engineering' });
+    User.findOne = async (query) => {
+      if (query.phone === '9876543210') {
+        return { _id: '650c1f1e1f1e1f1e1f1e0099', phone: '9876543210' };
+      }
+      return null;
+    };
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    await createEmployee(
+      {
+        body: {
+          name: 'New Employee',
+          email: 'unique.employee@example.com',
+          password: 'Password123!',
+          departmentId: '650c1f1e1f1e1f1e1f1e2001',
+          phone: '98765-43210',
+        },
+        user: { role: 'super_admin' },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 409);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.message.toLowerCase().includes('phone'));
+
+    statusCode = 0;
+    responseData = null;
+    await register(
+      {
+        body: {
+          name: 'Admin Two',
+          email: 'unique.admin@example.com',
+          password: 'Password123!',
+          phone: '98765 43210',
+        },
+      },
+      mockRes,
+      () => {}
+    );
+
+    assert.strictEqual(statusCode, 409);
+    assert.strictEqual(responseData.success, false);
+    assert.ok(responseData.message.toLowerCase().includes('phone'));
+
+    User.findOne = origUserFindOne;
+    Department.findById = origDeptFindById;
+  });
+
+  it('maps MongoDB duplicate key (11000) to 409 and ValidationError to 400 in errorHandler', async () => {
+    const { errorHandler } = await import('../src/middlewares/error.middleware.js');
+
+    let statusCode = 0;
+    let responseData = null;
+    const mockRes = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(data) {
+        responseData = data;
+        return this;
+      },
+    };
+
+    errorHandler(
+      { code: 11000, keyPattern: { phone: 1 }, keyValue: { phone: '9876543210' } },
+      {},
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 409);
+    assert.strictEqual(responseData.message, 'A user with this phone already exists');
+
+    errorHandler(
+      {
+        name: 'ValidationError',
+        errors: { phone: { message: 'Please provide a valid 10-digit mobile number or E.164 format (e.g. +919876543210)' } },
+      },
+      {},
+      mockRes,
+      () => {}
+    );
+    assert.strictEqual(statusCode, 400);
+    assert.ok(responseData.message.includes('valid 10-digit mobile number'));
+  });
+});

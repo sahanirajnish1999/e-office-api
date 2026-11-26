@@ -36,10 +36,11 @@ export const createEmployee = async (req, res, next) => {
       });
     }
 
-    if (phone && !isValidPhone(phone)) {
+    const normalizedPhone = normalizePhone(phone);
+    if (normalizedPhone && !isValidPhone(normalizedPhone)) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide a valid 10-digit mobile number',
+        message: 'Please provide a valid 10-digit mobile number or E.164 format (e.g. +919876543210)',
       });
     }
 
@@ -113,6 +114,16 @@ export const createEmployee = async (req, res, next) => {
       });
     }
 
+    if (normalizedPhone) {
+      const existingPhone = await User.findOne({ phone: normalizedPhone });
+      if (existingPhone) {
+        return res.status(409).json({
+          success: false,
+          message: 'A user with this phone number already exists',
+        });
+      }
+    }
+
     // Auto-generate employeeId if not provided (e.g. "MOR/ENG/045")
     let finalEmployeeId = (employeeId || '').trim().toUpperCase();
     if (!finalEmployeeId) {
@@ -126,7 +137,7 @@ export const createEmployee = async (req, res, next) => {
       role: 'employee',
       departmentId: targetDeptId,
       employeeId: finalEmployeeId,
-      phone: phone ? normalizePhone(phone) : '',
+      phone: normalizedPhone,
       designation: designation || 'Staff Employee',
       isAuthorizedOfficer: Boolean(isAuthorizedOfficer),
     };
